@@ -1,0 +1,11 @@
+alter table courses add column if not exists lms_provider text;
+alter table courses add column if not exists lms_course_id text;
+alter table courses add column if not exists lms_url text;
+alter table lectures add column if not exists asks_json text not null default '[]';
+alter table lectures add column if not exists traps_json text not null default '[]';
+alter table exams add column if not exists source text not null default 'manual';
+alter table profiles add column if not exists is_owner boolean not null default false;
+alter table profiles add column if not exists plan text not null default 'free';
+alter table profiles add column if not exists plan_status text not null default 'none';
+alter table profiles add column if not exists stripe_customer_id text;
+alter table profiles add column if not exists stripe_subscription_id text;
