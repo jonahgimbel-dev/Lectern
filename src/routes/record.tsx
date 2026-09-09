@@ -1,4 +1,4 @@
-import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
@@ -75,13 +75,15 @@ function RecordPage() {
 
   const live = session.live;
   const shown = session.captions.trim();
+  const busy = session.saving || session.starting;
 
   return (
     <AppShell>
       <AuthGate title="Record a lecture" copy="Sign in, then capture class audio into a study recap." next="/record">
-        <div className="mx-auto max-w-xl space-y-6">
+        <div className="mx-auto max-w-xl space-y-5">
           <header>
-            <h1 className="font-display text-4xl tracking-tight">Record a lecture</h1>
+            <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Record</p>
+            <h1 className="mt-1 font-display text-4xl tracking-tight">Record a lecture</h1>
             <p className="mt-2 text-muted-foreground">
               Pick a class, hit rec, then stop when class ends. Lectern files the notes for you.
             </p>
@@ -110,49 +112,77 @@ function RecordPage() {
               </Button>
             </form>
           ) : (
-            <select
-              className="min-h-11 w-full rounded-lg border border-border bg-surface px-3 text-sm"
-              value={pick}
-              disabled={live || session.saving}
-              onChange={(e) => setPick(e.target.value)}
-            >
-              {courses.map((course) => (
-                <option key={course.id} value={course.id}>
-                  {course.code} · {course.name}
-                </option>
-              ))}
-            </select>
+            <label className="block text-sm">
+              <span className="text-muted-foreground">Class</span>
+              <select
+                className="mt-1 min-h-11 w-full rounded-lg border border-border bg-surface px-3"
+                value={pick}
+                disabled={live || busy}
+                onChange={(e) => setPick(e.target.value)}
+              >
+                {courses.map((course) => (
+                  <option key={course.id} value={course.id}>
+                    {course.code} · {course.name}
+                  </option>
+                ))}
+              </select>
+            </label>
           )}
 
           {!live && !session.draft ? (
-            <Button disabled={session.saving || !pick} onClick={() => void rec()}>
-              Rec
+            <Button disabled={busy || !pick} onClick={() => void rec()}>
+              {session.starting ? "Starting…" : "Rec"}
             </Button>
           ) : live ? (
             <div className="flex flex-wrap gap-2">
-              <Button onClick={() => void stopSave()} disabled={session.saving}>
+              <Button onClick={() => void stopSave()} disabled={busy}>
                 {session.saving ? "Saving…" : "Stop & save"}
               </Button>
-              <Button variant="outline" onClick={() => togglePause()} disabled={session.saving}>
+              <Button variant="outline" onClick={() => togglePause()} disabled={busy}>
                 {session.paused ? "Resume" : "Pause"}
               </Button>
-              <Button variant="ghost" onClick={() => discardLecture()} disabled={session.saving}>
+              <Button variant="ghost" onClick={() => discardLecture()} disabled={busy}>
                 Discard
               </Button>
             </div>
           ) : (
             <div className="flex flex-wrap gap-2">
-              <Button disabled={session.saving} onClick={() => void saveDraftAgain().then(finish)}>
+              <Button disabled={busy} onClick={() => void saveDraftAgain().then(finish)}>
                 {session.saving ? "Saving…" : "Save lecture"}
               </Button>
-              <Button variant="ghost" onClick={() => discardLecture()} disabled={session.saving}>
+              <Button variant="ghost" onClick={() => discardLecture()} disabled={busy}>
                 Discard
               </Button>
             </div>
           )}
 
-          <p className="font-display text-5xl tabular-nums">{formatDuration(session.seconds)}</p>
-          <p className="min-h-16 text-muted-foreground">{shown || "Captions will appear here as you talk."}</p>
+          <div className="flex items-end justify-between gap-3">
+            <p className="font-display text-5xl tabular-nums">{formatDuration(session.seconds)}</p>
+            {live ? (
+              <span className="mb-2 inline-flex items-center gap-2 text-sm font-medium text-accent">
+                <span
+                  className={`h-2.5 w-2.5 rounded-full bg-accent ${session.paused ? "opacity-40" : "animate-pulse"}`}
+                />
+                {session.paused ? "Paused" : "REC"}
+              </span>
+            ) : null}
+          </div>
+
+          {live ? (
+            <div className="flex h-10 items-end gap-[3px] rounded-xl border border-border bg-surface px-3 py-2">
+              {session.levels.map((level, i) => (
+                <span
+                  key={i}
+                  className={`w-1.5 rounded-full ${session.hearing ? "bg-accent" : "bg-primary/40"}`}
+                  style={{ height: `${Math.round(18 + level * 82)}%` }}
+                />
+              ))}
+            </div>
+          ) : null}
+
+          <div className="min-h-24 rounded-xl border border-border bg-surface p-4 text-sm">
+            {shown || "Captions will appear here as you talk."}
+          </div>
           <p className="text-sm text-muted-foreground">{session.status}</p>
 
           {!live ? (
@@ -161,13 +191,17 @@ function RecordPage() {
               <Textarea value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="What did class cover?" />
               <Button
                 variant="outline"
-                disabled={session.saving || !pick || !typed.trim()}
+                disabled={busy || !pick || !typed.trim()}
                 onClick={() => void saveTypedLecture(typed, pick).then(finish)}
               >
                 Save notes
               </Button>
             </div>
-          ) : null}
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              You can open Canvas in another tab. Come back here and tap Stop & save.
+            </p>
+          )}
         </div>
       </AuthGate>
     </AppShell>
