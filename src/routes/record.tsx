@@ -64,11 +64,6 @@ function RecordPage() {
   }, [courses, pick]);
 
   function rec() {
-    if (framed) {
-      window.open(`${window.location.origin}/record${pick ? `?courseId=${pick}` : ""}`, "_blank", "noopener");
-      toast.message("Opened the recorder in a new tab — the mic only works there.");
-      return;
-    }
     if (pick) setLectureCourse(pick);
     void startLecture(pick).catch((error) => {
       toast.error(error instanceof Error ? error.message : "Allow the microphone, then hit Rec.");
@@ -197,7 +192,7 @@ function RecordPage() {
               {!live && !session.draft ? (
                 <button
                   type="button"
-                  disabled={busy}
+                  disabled={session.saving}
                   onClick={() => rec()}
                   className="flex h-32 w-32 flex-col items-center justify-center rounded-full bg-accent text-primary-fg shadow-sm transition-transform hover:scale-[1.03] disabled:opacity-50"
                 >
