@@ -1,10 +1,8 @@
 import { saveLecture } from "@/functions/data";
 import { transcribeAudio } from "@/functions/transcribe";
-import { blobToBase64, pcmToWav } from "@/lib/wav";
+import { blobToBase64, blobToWav, pickRecorderMime } from "@/lib/wav";
 
-const TARGET_RATE = 16_000;
-const FLUSH_SEC = 12;
-const FLUSH_SAMPLES = TARGET_RATE * FLUSH_SEC;
+const SEGMENT_MS = 15_000;
 const BAR_COUNT = 24;
 
 export type LectureSnap = {
@@ -23,26 +21,23 @@ export type LectureSnap = {
 };
 
 const listeners = new Set<() => void>();
-
 let snap: LectureSnap = idleSnap();
+
+let recorder: MediaRecorder | null = null;
 let stream: MediaStream | null = null;
 let speech: SpeechRec | null = null;
 let ticker: number | null = null;
-let flusher: number | null = null;
+let rotator: number | null = null;
 let startedAt = 0;
 let pausedAccum = 0;
 let pauseBegan = 0;
+let mime = "";
 let liveCaptions = "";
 let sttParts: string[] = [];
 let pending: Promise<void> = Promise.resolve();
 let generation = 0;
-let wakeLock: WakeLockSentinel | null = null;
 let audioCtx: AudioContext | null = null;
-let captureNode: AudioNode | null = null;
-let sourceNode: MediaStreamAudioSourceNode | null = null;
-let pcm = new Int16Array(FLUSH_SAMPLES * 2);
-let pcmLen = 0;
-let resamplePos = 0;
+let analyser: AnalyserNode | null = null;
 let quietSince = 0;
 
 function idleSnap(): LectureSnap {
@@ -79,18 +74,10 @@ function elapsed() {
 function shownText() {
   const spoken = sttParts.map((part) => part.trim()).filter(Boolean).join(" ");
   const live = liveCaptions.trim();
-  if (spoken && live && !spoken.includes(live) && live.length > 12) {
+  if (spoken && live && !spoken.includes(live) && live.split(/\s+/).length > 2) {
     return `${spoken} ${live}`.replace(/\s+/g, " ");
   }
   return spoken || live;
-}
-
-function listeningCopy() {
-  if (typeof document !== "undefined" && document.hidden) {
-    return "Still recording in the background. Other sites are fine — don’t close this tab.";
-  }
-  if (snap.hearing) return "Hearing you · keep this tab open.";
-  return "Listening for your voice · keep this tab open.";
 }
 
 export function getLectureSession() {
@@ -113,19 +100,14 @@ function micError(error: unknown) {
   return "Could not start the microphone.";
 }
 
-function stopSpeech() {
+function startSpeech() {
+  const SpeechApi = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechApi) return;
   try {
     speech?.stop();
   } catch {
-    /* already stopped */
+    /* ignore */
   }
-  speech = null;
-}
-
-function startSpeech() {
-  if (typeof document !== "undefined" && document.hidden) return;
-  const SpeechApi = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechApi) return;
   const recg = new SpeechApi();
   recg.continuous = true;
   recg.interimResults = true;
@@ -134,14 +116,14 @@ function startSpeech() {
     let text = "";
     for (let i = 0; i < event.results.length; i += 1) text += `${event.results[i][0].transcript} `;
     liveCaptions = text.trim();
-    emit({ captions: shownText() });
+    emit({ captions: shownText(), hearing: true });
   };
   recg.onend = () => {
     if (snap.live && !snap.paused && !document.hidden) {
       try {
         recg.start();
       } catch {
-        /* restart races */
+        /* gesture may have expired — recorder still runs */
       }
     }
   };
@@ -153,102 +135,22 @@ function startSpeech() {
   }
 }
 
-function appendSamples(input: Float32Array, fromRate: number) {
-  if (!snap.live || snap.paused) return;
-  const ratio = fromRate / TARGET_RATE;
-  let i = resamplePos;
-  while (i < input.length) {
-    if (pcmLen >= pcm.length) {
-      const grown = new Int16Array(pcm.length * 2);
-      grown.set(pcm);
-      pcm = grown;
-    }
-    const sample = Math.max(-1, Math.min(1, input[Math.floor(i)] ?? 0));
-    pcm[pcmLen] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-    pcmLen += 1;
-    i += ratio;
-  }
-  resamplePos = i - input.length;
-  let energy = 0;
-  for (let n = 0; n < input.length; n += 1) energy += input[n] * input[n];
-  const rms = Math.sqrt(energy / Math.max(1, input.length));
-  const hearing = rms > 0.012;
-  const levels = Array.from({ length: BAR_COUNT }, (_, idx) => {
-    const at = Math.floor((idx / BAR_COUNT) * input.length);
-    return Math.min(1, Math.max(0.06, Math.abs(input[at] ?? 0) * 4));
-  });
-  const now = Date.now();
-  if (hearing) quietSince = now;
-  emit({
-    hearing: hearing || (quietSince > 0 && now - quietSince < 1600),
-    levels,
-  });
-}
-
-async function attachCapture(nextStream: MediaStream) {
-  void audioCtx?.close().catch(() => undefined);
-  const ctx = new AudioContext();
-  await ctx.resume();
-  const source = ctx.createMediaStreamSource(nextStream);
-  const mute = ctx.createGain();
-  mute.gain.value = 0;
-  mute.connect(ctx.destination);
-  audioCtx = ctx;
-  sourceNode = source;
-  resamplePos = 0;
-
+function stopSpeech() {
   try {
-    const blob = new Blob(
-      [
-        `class LecternCapture extends AudioWorkletProcessor{process(inputs){const ch=inputs[0]&&inputs[0][0];if(ch&&ch.length)this.port.postMessage(ch.slice());return true}}registerProcessor('lectern-cap',LecternCapture)`,
-      ],
-      { type: "application/javascript" },
-    );
-    const url = URL.createObjectURL(blob);
-    await ctx.audioWorklet.addModule(url);
-    URL.revokeObjectURL(url);
-    const node = new AudioWorkletNode(ctx, "lectern-cap");
-    node.port.onmessage = (event) => {
-      const data = event.data;
-      if (data instanceof Float32Array) appendSamples(data, ctx.sampleRate);
-      else if (data instanceof ArrayBuffer) appendSamples(new Float32Array(data), ctx.sampleRate);
-    };
-    source.connect(node);
-    node.connect(mute);
-    captureNode = node;
-    return;
+    speech?.stop();
   } catch {
-    /* ScriptProcessor fallback */
+    /* ignore */
   }
-
-  const processor = ctx.createScriptProcessor(4096, 1, 1);
-  processor.onaudioprocess = (event) => {
-    appendSamples(new Float32Array(event.inputBuffer.getChannelData(0)), ctx.sampleRate);
-  };
-  source.connect(processor);
-  processor.connect(mute);
-  captureNode = processor;
+  speech = null;
 }
 
-function takePcm(all: boolean) {
-  const min = all ? TARGET_RATE * 0.35 : FLUSH_SAMPLES;
-  if (pcmLen < min) return all && pcmLen >= TARGET_RATE * 0.25 ? pcm.slice(0, pcmLen) : null;
-  const count = all ? pcmLen : FLUSH_SAMPLES;
-  const slice = pcm.slice(0, count);
-  const rest = pcm.slice(count, pcmLen);
-  pcm = new Int16Array(Math.max(FLUSH_SAMPLES * 2, rest.length + FLUSH_SAMPLES));
-  pcm.set(rest);
-  pcmLen = rest.length;
-  return slice;
-}
-
-function transcribePcm(samples: Int16Array) {
-  if (samples.length < TARGET_RATE * 0.25) return;
-  const wav = pcmToWav(samples, TARGET_RATE);
+function transcribeBlob(blob: Blob) {
+  if (blob.size < 1200) return;
   const gen = generation;
   pending = pending.then(async () => {
     if (gen !== generation) return;
     try {
+      const wav = await blobToWav(blob);
       const spoken = await transcribeAudio({
         data: {
           base64: await blobToBase64(wav),
@@ -262,79 +164,111 @@ function transcribePcm(samples: Int16Array) {
         emit({ captions: shownText() });
       }
     } catch {
-      /* captions remain */
+      /* live captions remain */
     }
   });
 }
 
-function flush(all = false) {
-  const samples = takePcm(all);
-  if (samples) transcribePcm(samples);
+function openRecorder() {
+  if (!stream) return;
+  const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+  const local: Blob[] = [];
+  rec.ondataavailable = (event) => {
+    if (event.data.size) local.push(event.data);
+  };
+  rec.onstop = () => {
+    transcribeBlob(new Blob(local, { type: rec.mimeType || mime || "audio/webm" }));
+  };
+  rec.start();
+  recorder = rec;
 }
 
-async function holdAwake() {
+function waitForStop() {
+  const rec = recorder;
+  if (!rec || rec.state === "inactive") return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    rec.addEventListener("stop", () => resolve(), { once: true });
+    try {
+      rec.requestData();
+      rec.stop();
+    } catch {
+      resolve();
+    }
+  });
+}
+
+function scheduleRotate() {
+  if (rotator) window.clearTimeout(rotator);
+  rotator = window.setTimeout(async () => {
+    if (!snap.live || snap.paused) return;
+    await waitForStop();
+    if (snap.live && !snap.paused) {
+      openRecorder();
+      scheduleRotate();
+    }
+  }, SEGMENT_MS);
+}
+
+function attachMeter(nextStream: MediaStream, ctx: AudioContext) {
   try {
-    wakeLock = (await navigator.wakeLock?.request("screen")) ?? null;
+    const source = ctx.createMediaStreamSource(nextStream);
+    const node = ctx.createAnalyser();
+    node.fftSize = 256;
+    source.connect(node);
+    analyser = node;
+    audioCtx = ctx;
+    void ctx.resume();
   } catch {
-    wakeLock = null;
-  }
-  try {
-    if (!navigator.mediaSession) return;
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: "Lectern is recording",
-      artist: "Leave this tab open in the background",
-    });
-    navigator.mediaSession.playbackState = "playing";
-  } catch {
-    /* optional */
+    analyser = null;
   }
 }
 
-function releaseGraph() {
-  try {
-    captureNode?.disconnect();
-  } catch {
-    /* ignore */
-  }
-  try {
-    sourceNode?.disconnect();
-  } catch {
-    /* ignore */
-  }
-  captureNode = null;
-  sourceNode = null;
-  void audioCtx?.close().catch(() => undefined);
-  audioCtx = null;
-  void wakeLock?.release().catch(() => undefined);
-  wakeLock = null;
-  try {
-    if (navigator.mediaSession) navigator.mediaSession.playbackState = "none";
-  } catch {
-    /* optional */
-  }
+function readMeter() {
+  if (!analyser) return { levels: snap.levels, hearing: snap.hearing };
+  const bins = new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(bins);
+  let energy = 0;
+  const levels = Array.from({ length: BAR_COUNT }, (_, i) => {
+    const v = (bins[Math.floor((i / BAR_COUNT) * bins.length)] ?? 128) - 128;
+    energy += v * v;
+    return Math.min(1, Math.max(0.06, Math.abs(v) / 40));
+  });
+  return { levels, hearing: Math.sqrt(energy / bins.length) > 6 };
 }
 
 function tick() {
   if (ticker) window.clearInterval(ticker);
   ticker = window.setInterval(() => {
     if (!snap.live) return;
+    const { levels, hearing } = readMeter();
+    const now = Date.now();
+    if (hearing || liveCaptions) quietSince = now;
+    const stillHearing = hearing || liveCaptions.length > 0 || (quietSince > 0 && now - quietSince < 1800);
     emit({
-      hidden: typeof document !== "undefined" && document.hidden,
-      status: snap.paused ? "Paused." : snap.hearing ? listeningCopy() : "Too quiet — talk closer to the mic.",
+      hidden: document.hidden,
+      hearing: stillHearing,
+      levels,
+      status: snap.paused
+        ? "Paused."
+        : stillHearing
+          ? document.hidden
+            ? "Still recording in the background. Don’t close this tab."
+            : "Listening for your voice · keep this tab open."
+          : "Listening for your voice · keep this tab open.",
     });
-  }, 250);
+  }, 200);
 }
 
 function onVisibility() {
-  emit({ hidden: document.hidden, status: snap.live && !snap.paused ? listeningCopy() : snap.status });
   if (document.hidden) {
     stopSpeech();
+    emit({ hidden: true });
     return;
   }
+  emit({ hidden: false });
   if (snap.live && !snap.paused) {
     startSpeech();
     void audioCtx?.resume();
-    void holdAwake();
   }
 }
 
@@ -344,64 +278,86 @@ function onBeforeUnload(event: BeforeUnloadEvent) {
   event.returnValue = "";
 }
 
-function stopTimers() {
+function hardStop() {
+  generation += 1;
+  if (rotator) window.clearTimeout(rotator);
+  rotator = null;
   if (ticker) window.clearInterval(ticker);
   ticker = null;
-  if (flusher) window.clearInterval(flusher);
-  flusher = null;
+  stopSpeech();
+  if (recorder && recorder.state !== "inactive") {
+    try {
+      recorder.stop();
+    } catch {
+      /* ignore */
+    }
+  }
+  recorder = null;
+  stream?.getTracks().forEach((track) => track.stop());
+  stream = null;
+  void audioCtx?.close().catch(() => undefined);
+  audioCtx = null;
+  analyser = null;
   document.removeEventListener("visibilitychange", onVisibility);
   window.removeEventListener("beforeunload", onBeforeUnload);
 }
 
 export async function startLecture(courseId: string) {
-  if (snap.saving || snap.starting) return;
-  if (snap.live) return;
   if (!courseId) throw new Error("Pick a class first.");
-  emit({ starting: true, courseId, status: "Allow the microphone…" });
-  const mic = navigator.mediaDevices.getUserMedia({ audio: true });
-  const nextStream = await Promise.race([
-    mic,
-    new Promise<MediaStream>((_, reject) => {
-      window.setTimeout(() => reject(new Error("Microphone timed out. Allow access, then hit Rec.")), 45_000);
-    }),
-  ]).catch((error) => {
-    emit({ starting: false, status: micError(error) });
-    throw new Error(micError(error));
-  });
-  generation += 1;
-  stream = nextStream;
+  if (snap.saving) return;
+  if (snap.live || snap.starting) hardStop();
+
   sttParts = [];
   pending = Promise.resolve();
   liveCaptions = "";
-  pcm = new Int16Array(FLUSH_SAMPLES * 2);
-  pcmLen = 0;
-  resamplePos = 0;
+  mime = pickRecorderMime();
   startedAt = Date.now();
   pausedAccum = 0;
   pauseBegan = 0;
   quietSince = Date.now();
-  document.addEventListener("visibilitychange", onVisibility);
-  window.addEventListener("beforeunload", onBeforeUnload);
-  await attachCapture(nextStream);
+  generation += 1;
+
+  // Must run in the Rec click — speech + AudioContext need the user gesture.
+  const ctx = typeof AudioContext !== "undefined" ? new AudioContext() : null;
+  void ctx?.resume();
   emit({
     live: true,
+    starting: true,
     paused: false,
-    starting: false,
     saving: false,
     courseId,
     captions: "",
     draft: null,
-    hidden: document.hidden,
+    hidden: false,
     hearing: false,
-    status: "Listening for your voice · keep this tab open.",
+    status: "Allow the microphone…",
     seconds: 0,
   });
-  await holdAwake();
   startSpeech();
+  document.addEventListener("visibilitychange", onVisibility);
+  window.addEventListener("beforeunload", onBeforeUnload);
   tick();
-  flusher = window.setInterval(() => {
-    if (snap.live && !snap.paused) flush(false);
-  }, FLUSH_SEC * 1000);
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (error) {
+    hardStop();
+    emit({ ...idleSnap(), status: micError(error) });
+    throw new Error(micError(error));
+  }
+
+  if (ctx) attachMeter(stream, ctx);
+  try {
+    openRecorder();
+    scheduleRotate();
+  } catch {
+    /* captions still run */
+  }
+  emit({
+    starting: false,
+    live: true,
+    status: "Listening for your voice · keep this tab open.",
+  });
 }
 
 export async function saveLectureSession() {
@@ -409,21 +365,29 @@ export async function saveLectureSession() {
   if (!snap.live && !snap.draft) return { ok: false as const, error: "Nothing to save." };
   emit({ saving: true, status: "Wrapping up audio…" });
   const durationSec = elapsed();
-  generation += 1;
+  const gen = generation;
+  if (rotator) window.clearTimeout(rotator);
+  rotator = null;
   stopSpeech();
-  flush(true);
+  await waitForStop();
+  recorder = null;
   stream?.getTracks().forEach((track) => track.stop());
   stream = null;
-  releaseGraph();
-  stopTimers();
+  if (ticker) window.clearInterval(ticker);
+  ticker = null;
+  void audioCtx?.close().catch(() => undefined);
+  audioCtx = null;
+  analyser = null;
+  document.removeEventListener("visibilitychange", onVisibility);
+  window.removeEventListener("beforeunload", onBeforeUnload);
   startedAt = 0;
   emit({ live: false, paused: false, status: "Transcribing…" });
   await pending;
+  if (gen !== generation) return { ok: false as const, error: "Recording was discarded." };
   const transcript = shownText().trim();
   if (!transcript) {
     emit({
       saving: false,
-      draft: null,
       starting: false,
       status: "No speech captured. Talk closer to the mic, or type what was said below.",
     });
@@ -439,7 +403,6 @@ export async function saveLectureSession() {
   }
   sttParts = [];
   liveCaptions = "";
-  pcmLen = 0;
   emit({ ...idleSnap(), courseId: snap.courseId });
   return result;
 }
@@ -473,16 +436,10 @@ export async function saveDraftAgain() {
 }
 
 export function discardLecture() {
-  generation += 1;
-  stopSpeech();
-  stream?.getTracks().forEach((track) => track.stop());
-  stream = null;
-  releaseGraph();
-  stopTimers();
+  hardStop();
   sttParts = [];
   liveCaptions = "";
   pending = Promise.resolve();
-  pcmLen = 0;
   startedAt = 0;
   pausedAccum = 0;
   pauseBegan = 0;
@@ -494,14 +451,25 @@ export function togglePause() {
   if (snap.paused) {
     if (pauseBegan) pausedAccum += Date.now() - pauseBegan;
     pauseBegan = 0;
+    try {
+      recorder?.resume();
+    } catch {
+      openRecorder();
+      scheduleRotate();
+    }
     emit({ paused: false, status: "Listening for your voice · keep this tab open." });
     startSpeech();
     void audioCtx?.resume();
-    void holdAwake();
     return;
   }
+  if (rotator) window.clearTimeout(rotator);
+  rotator = null;
   pauseBegan = Date.now();
-  flush(true);
+  try {
+    recorder?.pause();
+  } catch {
+    void waitForStop();
+  }
   stopSpeech();
   emit({ paused: true, status: "Paused.", hearing: false });
 }
