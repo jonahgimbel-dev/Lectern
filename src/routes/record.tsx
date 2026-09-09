@@ -14,6 +14,7 @@ import {
   saveDraftAgain,
   saveLectureSession,
   saveTypedLecture,
+  saveUploadedLecture,
   startLecture,
   subscribeLectureSession,
   togglePause,
@@ -35,6 +36,7 @@ function RecordPage() {
   const [pick, setPick] = useState(courseId ?? session.courseId);
   const [name, setName] = useState("");
   const [typed, setTyped] = useState("");
+  const [framed, setFramed] = useState(false);
 
   async function loadCourses(selectId?: string) {
     const rows = await listCourses().catch(() => [] as Course[]);
@@ -47,15 +49,21 @@ function RecordPage() {
   }, [courseId]);
 
   useEffect(() => {
+    try {
+      setFramed(window.self !== window.top);
+    } catch {
+      setFramed(true);
+    }
+  }, []);
+
+  useEffect(() => {
     if (!pick && courses[0]?.id) setPick(courses[0].id);
   }, [courses, pick]);
 
-  async function rec() {
-    try {
-      await startLecture(pick);
-    } catch (error) {
+  function rec() {
+    void startLecture(pick).catch((error) => {
       toast.error(error instanceof Error ? error.message : "Allow the microphone, then hit Rec.");
-    }
+    });
   }
 
   async function stopSave() {
@@ -92,6 +100,21 @@ function RecordPage() {
               Pick a class, hit rec, then stop when class ends. Lectern files the notes for you.
             </p>
           </header>
+
+          {framed ? (
+            <div className="rounded-xl border border-accent/40 bg-accent/10 p-4">
+              <p className="text-sm">
+                The microphone is blocked in this small preview. Open the recorder in its own tab — that’s how the original worked.
+              </p>
+              <Button
+                className="mt-3"
+                type="button"
+                onClick={() => window.open(window.location.href, "_blank", "noopener")}
+              >
+                Open recorder
+              </Button>
+            </div>
+          ) : null}
 
           {courses.length === 0 ? (
             <form
@@ -134,7 +157,7 @@ function RecordPage() {
           )}
 
           {!live && !session.draft ? (
-            <Button disabled={busy || !pick} onClick={() => void rec()}>
+            <Button type="button" disabled={busy || !pick} onClick={() => rec()}>
               {session.starting ? "Starting…" : "Rec"}
             </Button>
           ) : live ? (
@@ -191,15 +214,32 @@ function RecordPage() {
 
           {!live ? (
             <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">Mic acting up? Type a few notes and save those instead.</p>
+              <p className="text-sm text-muted-foreground">Mic acting up? Type notes or drop a voice memo.</p>
               <Textarea value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="What did class cover?" />
-              <Button
-                variant="outline"
-                disabled={busy || !pick || !typed.trim()}
-                onClick={() => void saveTypedLecture(typed, pick).then(finish)}
-              >
-                Save notes
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  disabled={busy || !pick || !typed.trim()}
+                  onClick={() => void saveTypedLecture(typed, pick).then(finish)}
+                >
+                  Save notes
+                </Button>
+                <label className="inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-border px-3 text-sm">
+                  Upload audio
+                  <input
+                    type="file"
+                    accept="audio/*,video/mp4,.m4a,.mp3,.wav,.webm"
+                    className="sr-only"
+                    disabled={busy || !pick}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = "";
+                      if (!file) return;
+                      void saveUploadedLecture(file, pick).then(finish);
+                    }}
+                  />
+                </label>
+              </div>
             </div>
           ) : (
             <p className="text-xs text-muted-foreground">
