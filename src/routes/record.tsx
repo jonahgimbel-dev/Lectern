@@ -104,9 +104,11 @@ function RecordPage() {
       ? session.lastError
       : live && session.hearing
         ? "Hearing you…"
-        : live
-          ? "Listening — talk toward the mic."
-          : "Captions show up here as you talk.";
+        : live && session.bufferedSec > 0.4
+          ? "Got audio — writing captions…"
+          : live
+            ? "Listening — talk toward the mic."
+            : "Captions show up here as you talk.";
 
   return (
     <AppShell>

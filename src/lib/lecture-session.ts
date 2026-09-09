@@ -3,7 +3,7 @@ import { transcribeAudio } from "@/functions/transcribe";
 import { blobToBase64, blobToWav, pcmToWav, pickRecorderMime } from "@/lib/wav";
 
 const TARGET_RATE = 16_000;
-const FLUSH_SEC = 4;
+const FLUSH_SEC = 3;
 const FLUSH_SAMPLES = TARGET_RATE * FLUSH_SEC;
 const BAR_COUNT = 24;
 
@@ -20,6 +20,7 @@ export type LectureSnap = {
   hearing: boolean;
   levels: number[];
   lastError: string;
+  bufferedSec: number;
   draft: { transcript: string; durationSec: number } | null;
 };
 
@@ -41,8 +42,10 @@ let sttParts: string[] = [];
 let pending: Promise<void> = Promise.resolve();
 let generation = 0;
 let audioCtx: AudioContext | null = null;
-let captureNode: ScriptProcessorNode | null = null;
+let analyser: AnalyserNode | null = null;
 let sourceNode: MediaStreamAudioSourceNode | null = null;
+let sinkNode: MediaStreamAudioDestinationNode | null = null;
+let timeBuf: Float32Array<ArrayBuffer> | null = null;
 let pcm = new Int16Array(FLUSH_SAMPLES * 2);
 let pcmLen = 0;
 let resamplePos = 0;
@@ -62,6 +65,7 @@ function idleSnap(): LectureSnap {
     hearing: false,
     levels: Array.from({ length: BAR_COUNT }, () => 0.08),
     lastError: "",
+    bufferedSec: 0,
     draft: null,
   };
 }
@@ -137,6 +141,9 @@ function startSpeech() {
     liveCaptions = text.trim();
     emit({ captions: shownText(), hearing: true });
   };
+  recg.onerror = () => {
+    /* STT still runs from the mic buffer */
+  };
   recg.onend = () => {
     if (snap.live && !snap.paused && !document.hidden) {
       window.setTimeout(() => {
@@ -186,16 +193,17 @@ function appendSamples(input: Float32Array, fromRate: number) {
   let energy = 0;
   for (let n = 0; n < input.length; n += 1) energy += input[n] * input[n];
   const rms = Math.sqrt(energy / Math.max(1, input.length));
-  const hearing = rms > 0.01;
+  const hearing = rms > 0.004;
   const levels = Array.from({ length: BAR_COUNT }, (_, idx) => {
     const at = Math.min(input.length - 1, Math.floor((idx / BAR_COUNT) * input.length));
-    return Math.min(1, Math.max(0.06, Math.abs(input[at] ?? 0) * 5));
+    return Math.min(1, Math.max(0.06, Math.abs(input[at] ?? 0) * 8));
   });
   const now = Date.now();
   if (hearing) quietSince = now;
   emit({
     hearing: hearing || (quietSince > 0 && now - quietSince < 1600),
     levels,
+    bufferedSec: pcmLen / TARGET_RATE,
   });
 }
 
@@ -241,15 +249,26 @@ function transcribeWavBlob(wav: Blob, gen: number) {
   });
 }
 
+function amplify(samples: Int16Array) {
+  const p = peak(samples);
+  if (p < 6) return samples;
+  if (p >= 6000) return samples;
+  const gain = Math.min(12, 6000 / p);
+  const out = new Int16Array(samples.length);
+  for (let i = 0; i < samples.length; i += 1) {
+    out[i] = Math.max(-32767, Math.min(32767, Math.round((samples[i] ?? 0) * gain)));
+  }
+  return out;
+}
+
 function transcribePcm(samples: Int16Array) {
-  if (samples.length < TARGET_RATE * 0.4) return;
-  if (peak(samples) < 80) return;
-  transcribeWavBlob(pcmToWav(samples, TARGET_RATE), generation);
+  if (samples.length < TARGET_RATE * 0.35) return;
+  if (peak(samples) < 6) return;
+  transcribeWavBlob(pcmToWav(amplify(samples), TARGET_RATE), generation);
 }
 
 function transcribeMedia(blob: Blob) {
-  if (blob.size < 1200) return;
-  if (sttParts.length && pcmLen > TARGET_RATE) return;
+  if (blob.size < 800) return;
   const gen = generation;
   pending = pending.then(async () => {
     if (gen !== generation) return;
@@ -269,7 +288,9 @@ function openRecorder() {
     if (event.data.size) local.push(event.data);
   };
   rec.onstop = () => {
-    transcribeMedia(new Blob(local, { type: rec.mimeType || mime || "audio/webm" }));
+    if (pcmLen < TARGET_RATE) {
+      transcribeMedia(new Blob(local, { type: rec.mimeType || mime || "audio/webm" }));
+    }
   };
   rec.start();
   recorder = rec;
@@ -308,26 +329,34 @@ function flush(all = false) {
 
 function attachCapture(nextStream: MediaStream, ctx: AudioContext) {
   const source = ctx.createMediaStreamSource(nextStream);
-  const mute = ctx.createGain();
-  mute.gain.value = 0;
-  mute.connect(ctx.destination);
-  const processor = ctx.createScriptProcessor(4096, 1, 1);
-  processor.onaudioprocess = (event) => {
-    appendSamples(new Float32Array(event.inputBuffer.getChannelData(0)), ctx.sampleRate);
-  };
-  source.connect(processor);
-  processor.connect(mute);
+  const node = ctx.createAnalyser();
+  node.fftSize = 2048;
+  node.smoothingTimeConstant = 0;
+  const sink = ctx.createMediaStreamDestination();
+  source.connect(node);
+  node.connect(sink);
   sourceNode = source;
-  captureNode = processor;
+  analyser = node;
+  sinkNode = sink;
   audioCtx = ctx;
+  timeBuf = new Float32Array(new ArrayBuffer(node.fftSize * 4));
+}
+
+function pullAnalyser() {
+  if (!analyser || !timeBuf || !audioCtx || !snap.live || snap.paused) return;
+  analyser.getFloatTimeDomainData(timeBuf);
+  appendSamples(timeBuf, audioCtx.sampleRate);
 }
 
 function tick() {
   if (ticker) window.clearInterval(ticker);
   ticker = window.setInterval(() => {
     if (!snap.live) return;
+    pullAnalyser();
+    const silent = elapsed() >= 2 && pcmLen < TARGET_RATE * 0.3;
     emit({
       hidden: document.hidden,
+      bufferedSec: pcmLen / TARGET_RATE,
       status: snap.paused
         ? "Paused."
         : snap.lastError
@@ -336,9 +365,11 @@ function tick() {
             ? "Still recording in the background. Don’t close this tab."
             : snap.hearing
               ? "Hearing you · keep this tab open."
-              : "Listening for your voice · keep this tab open.",
+              : silent
+                ? "Mic is on, but it’s silent. Check the input device in Chrome."
+                : "Listening for your voice · keep this tab open.",
     });
-  }, 250);
+  }, 40);
 }
 
 function onVisibility() {
@@ -362,7 +393,12 @@ function onBeforeUnload(event: BeforeUnloadEvent) {
 
 function releaseGraph() {
   try {
-    captureNode?.disconnect();
+    analyser?.disconnect();
+  } catch {
+    /* ignore */
+  }
+  try {
+    sinkNode?.disconnect();
   } catch {
     /* ignore */
   }
@@ -371,8 +407,10 @@ function releaseGraph() {
   } catch {
     /* ignore */
   }
-  captureNode = null;
+  analyser = null;
+  sinkNode = null;
   sourceNode = null;
+  timeBuf = null;
   void audioCtx?.close().catch(() => undefined);
   audioCtx = null;
 }
@@ -434,6 +472,7 @@ export async function startLecture(courseId = "") {
     lastError: "",
     status: "Allow the microphone…",
     seconds: 0,
+    bufferedSec: 0,
   });
   startSpeech();
   const mic = navigator.mediaDevices.getUserMedia({ audio: true });
@@ -638,6 +677,7 @@ type SpeechRec = {
   interimResults: boolean;
   lang: string;
   onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  onerror: (() => void) | null;
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
