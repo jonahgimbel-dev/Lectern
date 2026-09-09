@@ -1,4 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Mic, Pause, Square, Upload } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
@@ -15,11 +16,13 @@ import {
   saveLectureSession,
   saveTypedLecture,
   saveUploadedLecture,
+  setLectureCourse,
   startLecture,
   subscribeLectureSession,
   togglePause,
 } from "@/lib/lecture-session";
 import type { Course } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/record")({
   validateSearch: (search: Record<string, unknown>): { courseId?: string } => ({
@@ -61,12 +64,19 @@ function RecordPage() {
   }, [courses, pick]);
 
   function rec() {
+    if (framed) {
+      window.open(`${window.location.origin}/record${pick ? `?courseId=${pick}` : ""}`, "_blank", "noopener");
+      toast.message("Opened the recorder in a new tab — the mic only works there.");
+      return;
+    }
+    if (pick) setLectureCourse(pick);
     void startLecture(pick).catch((error) => {
       toast.error(error instanceof Error ? error.message : "Allow the microphone, then hit Rec.");
     });
   }
 
   async function stopSave() {
+    if (pick) setLectureCourse(pick);
     const result = await saveLectureSession();
     if (!result.ok) {
       toast.error(result.error);
@@ -88,149 +98,193 @@ function RecordPage() {
   const live = session.live;
   const shown = session.captions.trim();
   const busy = session.saving || session.starting;
+  const captionCopy = shown
+    ? shown
+    : session.lastError
+      ? session.lastError
+      : live && session.hearing
+        ? "Hearing you…"
+        : live
+          ? "Listening — talk toward the mic."
+          : "Captions show up here as you talk.";
 
   return (
     <AppShell>
-      <AuthGate title="Record a lecture" copy="Sign in, then capture class audio into a study recap." next="/record">
-        <div className="mx-auto max-w-xl space-y-5">
-          <header>
-            <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Record</p>
-            <h1 className="mt-1 font-display text-4xl tracking-tight">Record a lecture</h1>
-            <p className="mt-2 text-muted-foreground">
-              Pick a class, hit rec, then stop when class ends. Lectern files the notes for you.
-            </p>
-          </header>
-
-          {framed ? (
-            <div className="rounded-xl border border-accent/40 bg-accent/10 p-4">
-              <p className="text-sm">
-                The microphone is blocked in this small preview. Open the recorder in its own tab — that’s how the original worked.
-              </p>
-              <Button
-                className="mt-3"
-                type="button"
-                onClick={() => window.open(window.location.href, "_blank", "noopener")}
-              >
-                Open recorder
-              </Button>
+      <AuthGate title="Record a lecture" copy="Sign in, then capture class into a study recap." next="/record">
+        <div className="mx-auto max-w-2xl space-y-6">
+          <header className="flex items-end justify-between gap-4">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Studio</p>
+              <h1 className="mt-1 font-display text-4xl tracking-tight md:text-5xl">Record</h1>
             </div>
-          ) : null}
-
-          {courses.length === 0 ? (
-            <form
-              className="space-y-2 rounded-xl border border-border bg-surface p-4"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (!name.trim()) return;
-                void createCourse({ data: { name } })
-                  .then((result) => {
-                    if (!result.ok) return;
-                    setName("");
-                    toast.success("Class added.");
-                    return loadCourses(result.id);
-                  })
-                  .catch(() => toast.error("Could not add class."));
-              }}
-            >
-              <p className="text-sm text-muted-foreground">Add a class, then you can record.</p>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Class name" />
-              <Button type="submit" size="sm">
-                Add class
-              </Button>
-            </form>
-          ) : (
-            <label className="block text-sm">
-              <span className="text-muted-foreground">Class</span>
-              <select
-                className="mt-1 min-h-11 w-full rounded-lg border border-border bg-surface px-3"
-                value={pick}
-                disabled={live || busy}
-                onChange={(e) => setPick(e.target.value)}
-              >
-                {courses.map((course) => (
-                  <option key={course.id} value={course.id}>
-                    {course.code} · {course.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-
-          {!live && !session.draft ? (
-            <Button type="button" disabled={busy || !pick} onClick={() => rec()}>
-              {session.starting ? "Starting…" : "Rec"}
-            </Button>
-          ) : live ? (
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={() => void stopSave()} disabled={busy}>
-                {session.saving ? "Saving…" : "Stop & save"}
-              </Button>
-              <Button variant="outline" onClick={() => togglePause()} disabled={busy}>
-                {session.paused ? "Resume" : "Pause"}
-              </Button>
-              <Button variant="ghost" onClick={() => discardLecture()} disabled={busy}>
-                Discard
-              </Button>
-            </div>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              <Button disabled={busy} onClick={() => void saveDraftAgain().then(finish)}>
-                {session.saving ? "Saving…" : "Save lecture"}
-              </Button>
-              <Button variant="ghost" onClick={() => discardLecture()} disabled={busy}>
-                Discard
-              </Button>
-            </div>
-          )}
-
-          <div className="flex items-end justify-between gap-3">
-            <p className="font-display text-5xl tabular-nums">{formatDuration(session.seconds)}</p>
             {live ? (
-              <span className="mb-2 inline-flex items-center gap-2 text-sm font-medium text-accent">
-                <span
-                  className={`h-2.5 w-2.5 rounded-full bg-accent ${session.paused ? "opacity-40" : "animate-pulse"}`}
-                />
+              <span className="mb-1 inline-flex items-center gap-2 text-sm font-medium text-accent">
+                <span className={cn("h-2.5 w-2.5 rounded-full bg-accent", session.paused ? "opacity-40" : "animate-pulse")} />
                 {session.paused ? "Paused" : "REC"}
               </span>
             ) : null}
-          </div>
+          </header>
 
-          {live ? (
-            <div className="flex h-10 items-end gap-[3px] rounded-xl border border-border bg-surface px-3 py-2">
-              {session.levels.map((level, i) => (
-                <span
-                  key={i}
-                  className={`w-1.5 rounded-full ${session.hearing ? "bg-accent" : "bg-primary/40"}`}
-                  style={{ height: `${Math.round(18 + level * 82)}%` }}
-                />
-              ))}
+          {framed ? (
+            <div className="rounded-2xl border border-accent/40 bg-accent/10 p-5">
+              <p className="font-display text-xl">This window can’t hear you</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Browsers block the microphone in a small preview. Open the studio in its own tab, then hit Rec.
+              </p>
+              <Button className="mt-4" type="button" variant="accent" onClick={() => rec()}>
+                Open studio
+              </Button>
             </div>
           ) : null}
 
-          <div className="min-h-24 rounded-xl border border-border bg-surface p-4 text-sm">
-            {shown || session.lastError || "Captions will appear here as you talk."}
-          </div>
-          <p className="text-sm text-muted-foreground">{session.status}</p>
+          <section
+            className={cn(
+              "rounded-2xl border p-6 md:p-8",
+              live ? "border-primary bg-primary text-primary-fg" : "border-border bg-surface",
+            )}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <label className="text-sm">
+                <span className={live ? "text-primary-fg/70" : "text-muted-foreground"}>Class</span>
+                {courses.length === 0 ? (
+                  <form
+                    className="mt-1 flex gap-2"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (!name.trim()) return;
+                      void createCourse({ data: { name } })
+                        .then((result) => {
+                          if (!result.ok) return;
+                          setName("");
+                          return loadCourses(result.id);
+                        })
+                        .catch(() => toast.error("Could not add class."));
+                    }}
+                  >
+                    <Input
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="Add a class"
+                      className="w-44 bg-bg text-fg"
+                    />
+                    <Button type="submit" size="sm" variant={live ? "outline" : "default"}>
+                      Add
+                    </Button>
+                  </form>
+                ) : (
+                  <select
+                    className="mt-1 block min-h-11 rounded-lg border border-border bg-bg px-3 text-fg"
+                    value={pick}
+                    onChange={(e) => {
+                      setPick(e.target.value);
+                      setLectureCourse(e.target.value);
+                    }}
+                  >
+                    {courses.map((course) => (
+                      <option key={course.id} value={course.id}>
+                        {course.code} · {course.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </label>
+              <p className="font-display text-5xl tabular-nums md:text-6xl">{formatDuration(session.seconds)}</p>
+            </div>
+
+            <div className="mt-8 flex justify-center">
+              {!live && !session.draft ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => rec()}
+                  className="flex h-32 w-32 flex-col items-center justify-center rounded-full bg-accent text-primary-fg shadow-sm transition-transform hover:scale-[1.03] disabled:opacity-50"
+                >
+                  <Mic className="h-7 w-7" />
+                  <span className="mt-1 font-display text-xl">{session.starting ? "…" : "Rec"}</span>
+                </button>
+              ) : live ? (
+                <div className="flex flex-wrap items-center justify-center gap-3">
+                  <Button
+                    type="button"
+                    variant="accent"
+                    size="lg"
+                    disabled={busy}
+                    onClick={() => void stopSave()}
+                  >
+                    <Square className="h-4 w-4 fill-current" />
+                    {session.saving ? "Saving…" : "Stop & save"}
+                  </Button>
+                  <Button type="button" variant="outline" disabled={busy} onClick={() => togglePause()}>
+                    <Pause className="h-4 w-4" />
+                    {session.paused ? "Resume" : "Pause"}
+                  </Button>
+                  <Button type="button" variant="outline" disabled={busy} onClick={() => discardLecture()}>
+                    Discard
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  <Button disabled={busy} onClick={() => void saveDraftAgain().then(finish)}>
+                    {session.saving ? "Saving…" : "Save lecture"}
+                  </Button>
+                  <Button variant="ghost" onClick={() => discardLecture()}>
+                    Discard
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            {live ? (
+              <div className="mt-8 flex h-16 items-end gap-1 rounded-xl bg-primary-fg/10 px-4 py-3">
+                {session.levels.map((level, i) => (
+                  <span
+                    key={i}
+                    className={cn("w-full rounded-full", session.hearing ? "bg-accent" : "bg-primary-fg/40")}
+                    style={{ height: `${Math.round(18 + level * 82)}%` }}
+                  />
+                ))}
+              </div>
+            ) : null}
+
+            <div
+              className={cn(
+                "mt-6 min-h-32 rounded-xl p-4 text-sm leading-relaxed",
+                live ? "bg-bg text-fg" : "border border-border bg-bg",
+              )}
+            >
+              {captionCopy}
+            </div>
+            <p className={cn("mt-3 text-sm", live ? "text-primary-fg/70" : "text-muted-foreground")}>
+              {framed ? "Open the studio tab to record." : session.status}
+            </p>
+          </section>
 
           {!live ? (
-            <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">Mic acting up? Type notes or drop a voice memo.</p>
-              <Textarea value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="What did class cover?" />
-              <div className="flex flex-wrap gap-2">
+            <section className="rounded-2xl border border-border bg-surface p-5">
+              <p className="font-display text-xl">No mic?</p>
+              <p className="mt-1 text-sm text-muted-foreground">Type a few notes or upload a voice memo. Same recap either way.</p>
+              <Textarea
+                className="mt-3"
+                value={typed}
+                onChange={(e) => setTyped(e.target.value)}
+                placeholder="What did class cover?"
+              />
+              <div className="mt-3 flex flex-wrap gap-2">
                 <Button
                   variant="outline"
-                  disabled={busy || !pick || !typed.trim()}
+                  disabled={busy || !typed.trim()}
                   onClick={() => void saveTypedLecture(typed, pick).then(finish)}
                 >
                   Save notes
                 </Button>
-                <label className="inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-border px-3 text-sm">
+                <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-border px-3 text-sm">
+                  <Upload className="h-4 w-4" />
                   Upload audio
                   <input
                     type="file"
                     accept="audio/*,video/mp4,.m4a,.mp3,.wav,.webm"
                     className="sr-only"
-                    disabled={busy || !pick}
+                    disabled={busy}
                     onChange={(event) => {
                       const file = event.target.files?.[0];
                       event.target.value = "";
@@ -240,11 +294,9 @@ function RecordPage() {
                   />
                 </label>
               </div>
-            </div>
+            </section>
           ) : (
-            <p className="text-xs text-muted-foreground">
-              You can open Canvas in another tab. Come back here and tap Stop & save.
-            </p>
+            <p className="text-sm text-muted-foreground">Leave this tab open. Other sites are fine. Come back and tap Stop & save.</p>
           )}
         </div>
       </AuthGate>

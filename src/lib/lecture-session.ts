@@ -1,4 +1,4 @@
-import { saveLecture } from "@/functions/data";
+import { createCourse, saveLecture } from "@/functions/data";
 import { transcribeAudio } from "@/functions/transcribe";
 import { blobToBase64, blobToWav, pcmToWav, pickRecorderMime } from "@/lib/wav";
 
@@ -56,7 +56,7 @@ function idleSnap(): LectureSnap {
     saving: false,
     seconds: 0,
     captions: "",
-    status: "Pick a class, then hit rec.",
+    status: "Hit rec when class starts.",
     courseId: "",
     hidden: false,
     hearing: false,
@@ -401,8 +401,7 @@ function hardStop() {
   window.removeEventListener("beforeunload", onBeforeUnload);
 }
 
-export async function startLecture(courseId: string) {
-  if (!courseId) throw new Error("Pick a class first.");
+export async function startLecture(courseId = "") {
   if (snap.saving) return;
   if (snap.live || snap.starting) hardStop();
 
@@ -509,8 +508,14 @@ export async function saveLectureSession() {
     return { ok: false as const, error: "No speech captured. Try again closer to the mic." };
   }
   emit({ status: "Filing this lecture…" });
+  const course = await ensureCourse(snap.courseId);
+  if (!course.ok) {
+    emit({ saving: false, draft: { transcript, durationSec }, status: "Couldn’t file it — tap save again." });
+    return course;
+  }
+  emit({ courseId: course.id });
   const result = await saveLecture({
-    data: { courseId: snap.courseId, transcript, durationSec, source: "mic" },
+    data: { courseId: course.id, transcript, durationSec, source: "mic" },
   }).catch(() => ({ ok: false as const, error: "Could not save that lecture." }));
   if (!result.ok) {
     emit({ saving: false, draft: { transcript, durationSec }, status: "Couldn’t file it — tap save again." });
@@ -523,18 +528,29 @@ export async function saveLectureSession() {
   return result;
 }
 
+async function ensureCourse(courseId: string) {
+  if (courseId) return { ok: true as const, id: courseId };
+  const created = await createCourse({ data: { name: "Inbox", code: "INBOX" } }).catch(() => null);
+  if (!created?.ok) return { ok: false as const, error: "Could not file that lecture." };
+  return { ok: true as const, id: created.id };
+}
+
+export function setLectureCourse(courseId: string) {
+  emit({ courseId });
+}
+
 export async function saveTypedLecture(transcript: string, courseId?: string) {
   const text = transcript.trim();
   if (!text) return { ok: false as const, error: "Type a bit of what was said." };
-  const id = courseId || snap.courseId;
-  if (!id) return { ok: false as const, error: "Pick a class first." };
-  emit({ saving: true, status: "Filing this lecture…", courseId: id });
+  const course = await ensureCourse(courseId || snap.courseId);
+  if (!course.ok) return course;
+  emit({ saving: true, status: "Filing this lecture…", courseId: course.id });
   const result = await saveLecture({
-    data: { courseId: id, transcript: text, durationSec: elapsed() || snap.seconds, source: "typed" },
+    data: { courseId: course.id, transcript: text, durationSec: elapsed() || snap.seconds, source: "typed" },
   }).catch(() => ({ ok: false as const, error: "Could not save that lecture." }));
   emit({ saving: false });
   if (!result.ok) return result;
-  emit({ ...idleSnap(), courseId: id });
+  emit({ ...idleSnap(), courseId: course.id });
   return result;
 }
 
@@ -552,9 +568,9 @@ export async function saveDraftAgain() {
 }
 
 export async function saveUploadedLecture(file: File, courseId?: string) {
-  const id = courseId || snap.courseId;
-  if (!id) return { ok: false as const, error: "Pick a class first." };
-  emit({ saving: true, status: "Transcribing that file…", courseId: id });
+  const course = await ensureCourse(courseId || snap.courseId);
+  if (!course.ok) return course;
+  emit({ saving: true, status: "Transcribing that file…", courseId: course.id });
   try {
     const wav = file.type.includes("wav") ? file : await blobToWav(file);
     const spoken = await transcribeAudio({
@@ -568,7 +584,7 @@ export async function saveUploadedLecture(file: File, courseId?: string) {
       emit({ saving: false, lastError: spoken.ok ? "No speech in that file." : spoken.error });
       return { ok: false as const, error: spoken.ok ? "No speech in that file." : spoken.error };
     }
-    return saveTypedLecture(spoken.text, id);
+    return saveTypedLecture(spoken.text, course.id);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not read that audio file.";
     emit({ saving: false, lastError: message });
