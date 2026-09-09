@@ -1,8 +1,10 @@
 import { saveLecture } from "@/functions/data";
 import { transcribeAudio } from "@/functions/transcribe";
-import { blobToBase64, blobToWav, pickRecorderMime } from "@/lib/wav";
+import { blobToBase64, pcmToWav } from "@/lib/wav";
 
-const SEGMENT_MS = 15_000;
+const TARGET_RATE = 16_000;
+const FLUSH_SEC = 4;
+const FLUSH_SAMPLES = TARGET_RATE * FLUSH_SEC;
 const BAR_COUNT = 24;
 
 export type LectureSnap = {
@@ -17,27 +19,30 @@ export type LectureSnap = {
   hidden: boolean;
   hearing: boolean;
   levels: number[];
+  lastError: string;
   draft: { transcript: string; durationSec: number } | null;
 };
 
 const listeners = new Set<() => void>();
 let snap: LectureSnap = idleSnap();
 
-let recorder: MediaRecorder | null = null;
 let stream: MediaStream | null = null;
 let speech: SpeechRec | null = null;
 let ticker: number | null = null;
-let rotator: number | null = null;
+let flusher: number | null = null;
 let startedAt = 0;
 let pausedAccum = 0;
 let pauseBegan = 0;
-let mime = "";
 let liveCaptions = "";
 let sttParts: string[] = [];
 let pending: Promise<void> = Promise.resolve();
 let generation = 0;
 let audioCtx: AudioContext | null = null;
-let analyser: AnalyserNode | null = null;
+let captureNode: ScriptProcessorNode | null = null;
+let sourceNode: MediaStreamAudioSourceNode | null = null;
+let pcm = new Int16Array(FLUSH_SAMPLES * 2);
+let pcmLen = 0;
+let resamplePos = 0;
 let quietSince = 0;
 
 function idleSnap(): LectureSnap {
@@ -53,6 +58,7 @@ function idleSnap(): LectureSnap {
     hidden: false,
     hearing: false,
     levels: Array.from({ length: BAR_COUNT }, () => 0.08),
+    lastError: "",
     draft: null,
   };
 }
@@ -62,6 +68,7 @@ function emit(patch: Partial<LectureSnap> = {}) {
   if (patch.seconds === undefined) next.seconds = elapsed();
   if (patch.captions === undefined) next.captions = shownText();
   snap = next;
+  bindDebug();
   listeners.forEach((fn) => fn());
 }
 
@@ -78,6 +85,15 @@ function shownText() {
     return `${spoken} ${live}`.replace(/\s+/g, " ");
   }
   return spoken || live;
+}
+
+function bindDebug() {
+  if (typeof window === "undefined") return;
+  window.__lectern = {
+    snap,
+    pcmLen,
+    parts: sttParts,
+  };
 }
 
 export function getLectureSession() {
@@ -120,11 +136,14 @@ function startSpeech() {
   };
   recg.onend = () => {
     if (snap.live && !snap.paused && !document.hidden) {
-      try {
-        recg.start();
-      } catch {
-        /* gesture may have expired — recorder still runs */
-      }
+      window.setTimeout(() => {
+        if (!snap.live || snap.paused || document.hidden) return;
+        try {
+          recg.start();
+        } catch {
+          /* recorder still captures PCM */
+        }
+      }, 250);
     }
   };
   try {
@@ -144,13 +163,65 @@ function stopSpeech() {
   speech = null;
 }
 
-function transcribeBlob(blob: Blob) {
-  if (blob.size < 1200) return;
+function appendSamples(input: Float32Array, fromRate: number) {
+  if (!snap.live || snap.paused) return;
+  const ratio = fromRate / TARGET_RATE;
+  let i = resamplePos;
+  while (i < input.length) {
+    if (pcmLen >= pcm.length) {
+      const grown = new Int16Array(pcm.length * 2);
+      grown.set(pcm);
+      pcm = grown;
+    }
+    const sample = Math.max(-1, Math.min(1, input[Math.floor(i)] ?? 0));
+    pcm[pcmLen] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+    pcmLen += 1;
+    i += ratio;
+  }
+  resamplePos = i - input.length;
+
+  let energy = 0;
+  for (let n = 0; n < input.length; n += 1) energy += input[n] * input[n];
+  const rms = Math.sqrt(energy / Math.max(1, input.length));
+  const hearing = rms > 0.01;
+  const levels = Array.from({ length: BAR_COUNT }, (_, idx) => {
+    const at = Math.min(input.length - 1, Math.floor((idx / BAR_COUNT) * input.length));
+    return Math.min(1, Math.max(0.06, Math.abs(input[at] ?? 0) * 5));
+  });
+  const now = Date.now();
+  if (hearing) quietSince = now;
+  emit({
+    hearing: hearing || (quietSince > 0 && now - quietSince < 1600),
+    levels,
+  });
+}
+
+function takePcm(all: boolean) {
+  const min = all ? Math.floor(TARGET_RATE * 0.4) : FLUSH_SAMPLES;
+  if (pcmLen < min) return null;
+  const count = all ? pcmLen : FLUSH_SAMPLES;
+  const slice = pcm.slice(0, count);
+  const rest = pcm.slice(count, pcmLen);
+  pcm = new Int16Array(Math.max(FLUSH_SAMPLES * 2, rest.length + FLUSH_SAMPLES));
+  pcm.set(rest);
+  pcmLen = rest.length;
+  return slice;
+}
+
+function peak(samples: Int16Array) {
+  let max = 0;
+  for (let i = 0; i < samples.length; i += 1) max = Math.max(max, Math.abs(samples[i] ?? 0));
+  return max;
+}
+
+function transcribePcm(samples: Int16Array) {
+  if (samples.length < TARGET_RATE * 0.4) return;
+  if (peak(samples) < 80) return;
+  const wav = pcmToWav(samples, TARGET_RATE);
   const gen = generation;
   pending = pending.then(async () => {
     if (gen !== generation) return;
     try {
-      const wav = await blobToWav(blob);
       const spoken = await transcribeAudio({
         data: {
           base64: await blobToBase64(wav),
@@ -161,102 +232,54 @@ function transcribeBlob(blob: Blob) {
       if (gen !== generation) return;
       if (spoken.ok && spoken.text) {
         sttParts = [...sttParts, spoken.text.trim()];
-        emit({ captions: shownText() });
+        emit({ captions: shownText(), lastError: "" });
+        return;
       }
-    } catch {
-      /* live captions remain */
+      emit({ lastError: spoken.ok ? "" : spoken.error, status: spoken.ok ? snap.status : spoken.error });
+    } catch (error) {
+      emit({ lastError: error instanceof Error ? error.message : "Could not transcribe." });
     }
   });
 }
 
-function openRecorder() {
-  if (!stream) return;
-  const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-  const local: Blob[] = [];
-  rec.ondataavailable = (event) => {
-    if (event.data.size) local.push(event.data);
+function flush(all = false) {
+  const samples = takePcm(all);
+  if (samples) transcribePcm(samples);
+}
+
+function attachCapture(nextStream: MediaStream, ctx: AudioContext) {
+  const source = ctx.createMediaStreamSource(nextStream);
+  const mute = ctx.createGain();
+  mute.gain.value = 0;
+  mute.connect(ctx.destination);
+  const processor = ctx.createScriptProcessor(4096, 1, 1);
+  processor.onaudioprocess = (event) => {
+    appendSamples(new Float32Array(event.inputBuffer.getChannelData(0)), ctx.sampleRate);
   };
-  rec.onstop = () => {
-    transcribeBlob(new Blob(local, { type: rec.mimeType || mime || "audio/webm" }));
-  };
-  rec.start();
-  recorder = rec;
-}
-
-function waitForStop() {
-  const rec = recorder;
-  if (!rec || rec.state === "inactive") return Promise.resolve();
-  return new Promise<void>((resolve) => {
-    rec.addEventListener("stop", () => resolve(), { once: true });
-    try {
-      rec.requestData();
-      rec.stop();
-    } catch {
-      resolve();
-    }
-  });
-}
-
-function scheduleRotate() {
-  if (rotator) window.clearTimeout(rotator);
-  rotator = window.setTimeout(async () => {
-    if (!snap.live || snap.paused) return;
-    await waitForStop();
-    if (snap.live && !snap.paused) {
-      openRecorder();
-      scheduleRotate();
-    }
-  }, SEGMENT_MS);
-}
-
-function attachMeter(nextStream: MediaStream, ctx: AudioContext) {
-  try {
-    const source = ctx.createMediaStreamSource(nextStream);
-    const node = ctx.createAnalyser();
-    node.fftSize = 256;
-    source.connect(node);
-    analyser = node;
-    audioCtx = ctx;
-    void ctx.resume();
-  } catch {
-    analyser = null;
-  }
-}
-
-function readMeter() {
-  if (!analyser) return { levels: snap.levels, hearing: snap.hearing };
-  const bins = new Uint8Array(analyser.fftSize);
-  analyser.getByteTimeDomainData(bins);
-  let energy = 0;
-  const levels = Array.from({ length: BAR_COUNT }, (_, i) => {
-    const v = (bins[Math.floor((i / BAR_COUNT) * bins.length)] ?? 128) - 128;
-    energy += v * v;
-    return Math.min(1, Math.max(0.06, Math.abs(v) / 40));
-  });
-  return { levels, hearing: Math.sqrt(energy / bins.length) > 6 };
+  source.connect(processor);
+  processor.connect(mute);
+  sourceNode = source;
+  captureNode = processor;
+  audioCtx = ctx;
 }
 
 function tick() {
   if (ticker) window.clearInterval(ticker);
   ticker = window.setInterval(() => {
     if (!snap.live) return;
-    const { levels, hearing } = readMeter();
-    const now = Date.now();
-    if (hearing || liveCaptions) quietSince = now;
-    const stillHearing = hearing || liveCaptions.length > 0 || (quietSince > 0 && now - quietSince < 1800);
     emit({
       hidden: document.hidden,
-      hearing: stillHearing,
-      levels,
       status: snap.paused
         ? "Paused."
-        : stillHearing
-          ? document.hidden
+        : snap.lastError
+          ? snap.lastError
+          : document.hidden
             ? "Still recording in the background. Don’t close this tab."
-            : "Listening for your voice · keep this tab open."
-          : "Listening for your voice · keep this tab open.",
+            : snap.hearing
+              ? "Hearing you · keep this tab open."
+              : "Listening for your voice · keep this tab open.",
     });
-  }, 200);
+  }, 250);
 }
 
 function onVisibility() {
@@ -278,26 +301,33 @@ function onBeforeUnload(event: BeforeUnloadEvent) {
   event.returnValue = "";
 }
 
+function releaseGraph() {
+  try {
+    captureNode?.disconnect();
+  } catch {
+    /* ignore */
+  }
+  try {
+    sourceNode?.disconnect();
+  } catch {
+    /* ignore */
+  }
+  captureNode = null;
+  sourceNode = null;
+  void audioCtx?.close().catch(() => undefined);
+  audioCtx = null;
+}
+
 function hardStop() {
   generation += 1;
-  if (rotator) window.clearTimeout(rotator);
-  rotator = null;
+  if (flusher) window.clearInterval(flusher);
+  flusher = null;
   if (ticker) window.clearInterval(ticker);
   ticker = null;
   stopSpeech();
-  if (recorder && recorder.state !== "inactive") {
-    try {
-      recorder.stop();
-    } catch {
-      /* ignore */
-    }
-  }
-  recorder = null;
   stream?.getTracks().forEach((track) => track.stop());
   stream = null;
-  void audioCtx?.close().catch(() => undefined);
-  audioCtx = null;
-  analyser = null;
+  releaseGraph();
   document.removeEventListener("visibilitychange", onVisibility);
   window.removeEventListener("beforeunload", onBeforeUnload);
 }
@@ -310,16 +340,17 @@ export async function startLecture(courseId: string) {
   sttParts = [];
   pending = Promise.resolve();
   liveCaptions = "";
-  mime = pickRecorderMime();
+  pcm = new Int16Array(FLUSH_SAMPLES * 2);
+  pcmLen = 0;
+  resamplePos = 0;
   startedAt = Date.now();
   pausedAccum = 0;
   pauseBegan = 0;
   quietSince = Date.now();
   generation += 1;
 
-  // Must run in the Rec click — speech + AudioContext need the user gesture.
-  const ctx = typeof AudioContext !== "undefined" ? new AudioContext() : null;
-  void ctx?.resume();
+  const ctx = new AudioContext();
+  void ctx.resume();
   emit({
     live: true,
     starting: true,
@@ -330,29 +361,30 @@ export async function startLecture(courseId: string) {
     draft: null,
     hidden: false,
     hearing: false,
+    lastError: "",
     status: "Allow the microphone…",
     seconds: 0,
   });
-  startSpeech();
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("beforeunload", onBeforeUnload);
   tick();
 
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
   } catch (error) {
     hardStop();
-    emit({ ...idleSnap(), status: micError(error) });
+    emit({ ...idleSnap(), status: micError(error), lastError: micError(error) });
     throw new Error(micError(error));
   }
 
-  if (ctx) attachMeter(stream, ctx);
-  try {
-    openRecorder();
-    scheduleRotate();
-  } catch {
-    /* captions still run */
-  }
+  await ctx.resume();
+  attachCapture(stream, ctx);
+  startSpeech();
+  flusher = window.setInterval(() => {
+    if (snap.live && !snap.paused) flush(false);
+  }, FLUSH_SEC * 1000);
   emit({
     starting: false,
     live: true,
@@ -366,18 +398,15 @@ export async function saveLectureSession() {
   emit({ saving: true, status: "Wrapping up audio…" });
   const durationSec = elapsed();
   const gen = generation;
-  if (rotator) window.clearTimeout(rotator);
-  rotator = null;
+  if (flusher) window.clearInterval(flusher);
+  flusher = null;
   stopSpeech();
-  await waitForStop();
-  recorder = null;
+  flush(true);
   stream?.getTracks().forEach((track) => track.stop());
   stream = null;
+  releaseGraph();
   if (ticker) window.clearInterval(ticker);
   ticker = null;
-  void audioCtx?.close().catch(() => undefined);
-  audioCtx = null;
-  analyser = null;
   document.removeEventListener("visibilitychange", onVisibility);
   window.removeEventListener("beforeunload", onBeforeUnload);
   startedAt = 0;
@@ -389,6 +418,7 @@ export async function saveLectureSession() {
     emit({
       saving: false,
       starting: false,
+      lastError: snap.lastError || "No speech captured.",
       status: "No speech captured. Talk closer to the mic, or type what was said below.",
     });
     return { ok: false as const, error: "No speech captured. Try again closer to the mic." };
@@ -403,6 +433,7 @@ export async function saveLectureSession() {
   }
   sttParts = [];
   liveCaptions = "";
+  pcmLen = 0;
   emit({ ...idleSnap(), courseId: snap.courseId });
   return result;
 }
@@ -440,6 +471,7 @@ export function discardLecture() {
   sttParts = [];
   liveCaptions = "";
   pending = Promise.resolve();
+  pcmLen = 0;
   startedAt = 0;
   pausedAccum = 0;
   pauseBegan = 0;
@@ -451,25 +483,13 @@ export function togglePause() {
   if (snap.paused) {
     if (pauseBegan) pausedAccum += Date.now() - pauseBegan;
     pauseBegan = 0;
-    try {
-      recorder?.resume();
-    } catch {
-      openRecorder();
-      scheduleRotate();
-    }
     emit({ paused: false, status: "Listening for your voice · keep this tab open." });
     startSpeech();
     void audioCtx?.resume();
     return;
   }
-  if (rotator) window.clearTimeout(rotator);
-  rotator = null;
   pauseBegan = Date.now();
-  try {
-    recorder?.pause();
-  } catch {
-    void waitForStop();
-  }
+  flush(true);
   stopSpeech();
   emit({ paused: true, status: "Paused.", hearing: false });
 }
@@ -488,5 +508,6 @@ declare global {
   interface Window {
     SpeechRecognition?: new () => SpeechRec;
     webkitSpeechRecognition?: new () => SpeechRec;
+    __lectern?: { snap: LectureSnap; pcmLen: number; parts: string[] };
   }
 }

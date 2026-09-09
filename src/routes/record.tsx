@@ -46,6 +46,10 @@ function RecordPage() {
     void loadCourses();
   }, [courseId]);
 
+  useEffect(() => {
+    if (!pick && courses[0]?.id) setPick(courses[0].id);
+  }, [courses, pick]);
+
   async function rec() {
     try {
       await startLecture(pick);
@@ -181,7 +185,7 @@ function RecordPage() {
           ) : null}
 
           <div className="min-h-24 rounded-xl border border-border bg-surface p-4 text-sm">
-            {shown || "Captions will appear here as you talk."}
+            {shown || session.lastError || "Captions will appear here as you talk."}
           </div>
           <p className="text-sm text-muted-foreground">{session.status}</p>
 
