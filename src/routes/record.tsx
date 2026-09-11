@@ -138,15 +138,13 @@ function RecordPage() {
   const busy = session.saving || session.starting;
   const captionCopy = shown
     ? shown
-    : session.lastError
-      ? session.lastError
-      : live && session.hearing
-        ? "Hearing you…"
-        : live && session.bufferedSec > 0.4
-          ? "Got audio — writing captions…"
-          : live
-            ? "Listening — talk toward the mic."
-            : "Captions show up here as you talk.";
+    : live && session.hearing
+      ? "Hearing you…"
+      : live && session.seconds >= 4 && !session.hearing
+        ? "Mic is open but silent. If class is on Zoom or a video, use Share tab audio."
+        : live
+          ? "Listening — talk toward the mic."
+          : "Captions show up here as you talk.";
 
   return (
     <AppShell>
@@ -231,17 +229,35 @@ function RecordPage() {
               <p className="font-display text-5xl tabular-nums md:text-6xl">{formatDuration(session.seconds)}</p>
             </div>
 
-            <div className="mt-8 flex justify-center">
+            <div className="mt-8 flex flex-col items-center gap-3">
               {!live && !session.draft ? (
-                <button
-                  type="button"
-                  disabled={session.saving}
-                  onClick={() => rec()}
-                  className="flex h-32 w-32 flex-col items-center justify-center rounded-full bg-accent text-primary-fg shadow-sm transition-transform hover:scale-[1.03] disabled:opacity-50"
-                >
-                  <Mic className="h-7 w-7" />
-                  <span className="mt-1 font-display text-xl">{session.starting ? "…" : "Rec"}</span>
-                </button>
+                <>
+                  <button
+                    type="button"
+                    disabled={session.saving}
+                    onClick={() => rec()}
+                    className="flex h-32 w-32 flex-col items-center justify-center rounded-full bg-accent text-primary-fg shadow-sm transition-transform hover:scale-[1.03] disabled:opacity-50"
+                  >
+                    <Mic className="h-7 w-7" />
+                    <span className="mt-1 font-display text-xl">{session.starting ? "…" : "Rec"}</span>
+                  </button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={session.saving}
+                    onClick={() => {
+                      if (pick) setLectureCourse(pick);
+                      void startLecture(pick, { tab: true }).catch((error) => {
+                        toast.error(error instanceof Error ? error.message : "Share the tab, and turn on audio.");
+                      });
+                    }}
+                  >
+                    Share tab audio
+                  </Button>
+                  <p className="max-w-sm text-center text-sm text-muted-foreground">
+                    Rec hears the room. If the lecture is on Zoom or a video, use Share tab audio and check “Share tab audio”.
+                  </p>
+                </>
               ) : live ? (
                 <div className="flex flex-wrap items-center justify-center gap-3">
                   <Button

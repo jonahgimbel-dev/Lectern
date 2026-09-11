@@ -26,6 +26,8 @@ const listeners = new Set<() => void>();
 let snap: LectureSnap = idleSnap();
 
 let recorder: MediaRecorder | null = null;
+let liveRec: MediaRecorder | null = null;
+let liveTimer: number | null = null;
 let stream: MediaStream | null = null;
 let speech: SpeechRec | null = null;
 let ticker: number | null = null;
@@ -186,8 +188,7 @@ function releaseAwake() {
   }
 }
 
-function waitForStop() {
-  const rec = recorder;
+function waitForStop(rec: MediaRecorder | null = recorder) {
   if (!rec || rec.state === "inactive") return Promise.resolve();
   return new Promise<void>((resolve) => {
     rec.addEventListener("stop", () => resolve(), { once: true });
@@ -198,6 +199,79 @@ function waitForStop() {
       resolve();
     }
   });
+}
+
+function stopLiveClip() {
+  if (liveTimer) window.clearTimeout(liveTimer);
+  liveTimer = null;
+  if (liveRec && liveRec.state !== "inactive") {
+    try {
+      liveRec.stop();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function rotateLive() {
+  if (!stream || !snap.live || snap.paused) return;
+  const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+  const bits: Blob[] = [];
+  rec.ondataavailable = (event) => {
+    if (event.data.size) bits.push(event.data);
+  };
+  rec.onstop = () => {
+    const blob = new Blob(bits, { type: rec.mimeType || mime || "audio/webm" });
+    if (blob.size > 1500) {
+      void transcribeArchive(blob).then((text) => {
+        if (!text || !snap.live) return;
+        sttParts = [...sttParts, text];
+        emit({ captions: shownText(), lastError: "", hearing: true });
+      });
+    }
+    if (snap.live && !snap.paused) rotateLive();
+  };
+  try {
+    rec.start();
+    liveRec = rec;
+    liveTimer = window.setTimeout(() => {
+      if (rec.state !== "inactive") {
+        try {
+          rec.stop();
+        } catch {
+          rotateLive();
+        }
+      }
+    }, 3500);
+  } catch {
+    liveRec = null;
+  }
+}
+
+async function openAudioStream(opts: { tab?: boolean; deviceId?: string }) {
+  if (opts.tab) {
+    const display = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: true,
+    });
+    if (!display.getAudioTracks().length) {
+      display.getTracks().forEach((track) => track.stop());
+      throw new Error("That share had no sound. In the picker, turn on “Share tab audio”.");
+    }
+    return display;
+  }
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: true,
+        ...(opts.deviceId ? { deviceId: { ideal: opts.deviceId } } : {}),
+      },
+    });
+  } catch {
+    return await navigator.mediaDevices.getUserMedia({ audio: true });
+  }
 }
 
 function downsample(input: Float32Array, fromRate: number) {
@@ -215,12 +289,13 @@ function downsample(input: Float32Array, fromRate: number) {
   return pcm;
 }
 
-function attachCapture(nextStream: MediaStream) {
-  const ctx = new AudioContext();
+function attachCapture(nextStream: MediaStream, ctx: AudioContext) {
   void ctx.resume();
   const source = ctx.createMediaStreamSource(nextStream);
   const node = ctx.createScriptProcessor(4096, 1, 1);
   const sink = ctx.createMediaStreamDestination();
+  const gain = ctx.createGain();
+  gain.gain.value = 0.001;
   node.onaudioprocess = (event) => {
     if (!snap.live || snap.paused) return;
     const input = event.inputBuffer.getChannelData(0);
@@ -229,14 +304,16 @@ function attachCapture(nextStream: MediaStream) {
     const rms = Math.sqrt(energy / Math.max(1, input.length));
     const levels = Array.from({ length: BAR_COUNT }, (_, idx) => {
       const at = Math.min(input.length - 1, Math.floor((idx / BAR_COUNT) * input.length));
-      return Math.min(1, Math.max(0.06, Math.abs(input[at] ?? 0) * 8));
+      return Math.min(1, Math.max(0.08, Math.abs(input[at] ?? 0) * 12));
     });
-    emit({ hearing: rms > 0.004 || Boolean(captions || livePartial), levels, bufferedSec: elapsed() });
+    emit({ hearing: rms > 0.002 || Boolean(captions || livePartial), levels, bufferedSec: elapsed() });
     const pcm = downsample(new Float32Array(input), ctx.sampleRate);
     if (pcm.length) stt?.sendPcm(pcm);
   };
   source.connect(node);
   node.connect(sink);
+  node.connect(gain);
+  gain.connect(ctx.destination);
   audioCtx = ctx;
   sourceNode = source;
   processor = node;
@@ -345,7 +422,7 @@ export function inMicBlockedFrame() {
   return window.location.hostname.endsWith(".grok-sandbox.com") && window.self !== window.top;
 }
 
-export async function startLecture(courseId = "") {
+export async function startLecture(courseId = "", opts: { tab?: boolean; deviceId?: string } = {}) {
   if (snap.saving) return;
   if (snap.live && !snap.starting) return;
 
@@ -360,6 +437,9 @@ export async function startLecture(courseId = "") {
   pcmTail = new Int16Array(0);
   mime = pickRecorderMime();
 
+  const ctx = new AudioContext();
+  void ctx.resume();
+
   emit({
     live: true,
     starting: true,
@@ -372,7 +452,7 @@ export async function startLecture(courseId = "") {
     hearing: false,
     lastError: "",
     bufferedSec: 0,
-    status: "Allow the microphone…",
+    status: opts.tab ? "Pick the tab and share its audio…" : "Allow the microphone…",
     seconds: 0,
   });
   tick();
@@ -383,9 +463,11 @@ export async function startLecture(courseId = "") {
 
   let nextStream: MediaStream;
   try {
-    nextStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    nextStream = await openAudioStream(opts);
+    await ctx.resume();
   } catch (error) {
     startedAt = 0;
+    void ctx.close().catch(() => undefined);
     if (ticker) window.clearInterval(ticker);
     ticker = null;
     stopSpeech();
@@ -413,14 +495,16 @@ export async function startLecture(courseId = "") {
       emit({ captions: shownText(), hearing: true, lastError: "" });
     },
     onError(message) {
+      if (/no speech/i.test(message)) return;
       emit({ lastError: message });
     },
   });
   try {
-    attachCapture(nextStream);
+    attachCapture(nextStream, ctx);
   } catch {
-    /* archive + speech still run */
+    audioCtx = ctx;
   }
+  rotateLive();
   if (!speech) startSpeech();
   emit({ live: true, starting: false, status: listeningCopy() });
 }
@@ -430,7 +514,10 @@ export async function saveLectureSession() {
   if (!snap.live && !snap.draft) return { ok: false as const, error: "Nothing to save." };
   emit({ saving: true, status: "Wrapping up audio…" });
   stopSpeech();
-  await waitForStop();
+  stopLiveClip();
+  await waitForStop(liveRec);
+  liveRec = null;
+  await waitForStop(recorder);
   recorder = null;
   const liveText = stt ? await stt.close() : "";
   stt = null;
@@ -539,6 +626,8 @@ export async function saveUploadedLecture(file: File, courseId?: string) {
 
 export function discardLecture() {
   stopSpeech();
+  stopLiveClip();
+  liveRec = null;
   void stt?.close();
   stt = null;
   if (recorder && recorder.state !== "inactive") {
@@ -579,6 +668,7 @@ export function togglePause() {
     }
     emit({ paused: false, status: listeningCopy() });
     startSpeech();
+    rotateLive();
     holdAwake();
     void audioCtx?.resume();
     return;
@@ -589,6 +679,7 @@ export function togglePause() {
   } catch {
     /* some browsers lack pause */
   }
+  stopLiveClip();
   stopSpeech();
   emit({ paused: true, status: "Paused.", hearing: false });
 }

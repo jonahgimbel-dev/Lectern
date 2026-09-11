@@ -85,7 +85,8 @@ export function openSttLive(handlers: SttHandlers): SttLive {
         if (spoken.ok && spoken.text) {
           finals.push(spoken.text.trim());
           handlers.onPartial(spoken.text.trim(), true);
-        } else if (!spoken.ok) handlers.onError(spoken.error);
+        }
+        // Empty clips stay quiet — a live lecture has pauses.
       } catch (error) {
         handlers.onError(error instanceof Error ? error.message : "Could not transcribe.");
       }
