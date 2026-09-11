@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { createCourse, listCourses } from "@/functions/data";
+import { getBearerToken } from "@/lib/auth/client";
 import { formatDuration } from "@/lib/format";
 import {
   discardLecture,
@@ -60,11 +61,53 @@ function RecordPage() {
   }, []);
 
   useEffect(() => {
+    const origin = window.location.origin;
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== origin) return;
+      const data = event.data as { source?: string; type?: string; id?: string } | undefined;
+      if (data?.source !== "lectern-booth" || data.type !== "saved" || !data.id) return;
+      toast.success("Lecture saved.");
+      void navigate({ to: "/lecture/$id", params: { id: data.id } });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [navigate]);
+
+  useEffect(() => {
     if (!pick && courses[0]?.id) setPick(courses[0].id);
   }, [courses, pick]);
 
   function rec() {
     if (pick) setLectureCourse(pick);
+    let framed = false;
+    try {
+      framed = window.self !== window.top || window.location.hostname.endsWith(".grok-sandbox.com");
+    } catch {
+      framed = true;
+    }
+    if (framed) {
+      const booth = window.open(
+        `${window.location.origin}/record/booth${pick ? `?courseId=${encodeURIComponent(pick)}` : ""}`,
+        `lectern-booth-${Date.now()}`,
+        "popup,width=440,height=760",
+      );
+      if (!booth) {
+        toast.error("Allow pop-ups, then hit Rec. The mic needs its own window.");
+        return;
+      }
+      const token = getBearerToken();
+      const origin = window.location.origin;
+      const sendToken = (event: MessageEvent) => {
+        if (event.origin !== origin) return;
+        const data = event.data as { source?: string; type?: string } | undefined;
+        if (data?.source !== "lectern-booth" || data.type !== "ready") return;
+        if (token) booth.postMessage({ source: "lectern-booth", token }, origin);
+        window.removeEventListener("message", sendToken);
+      };
+      window.addEventListener("message", sendToken);
+      toast.message("Hit Rec in the booth window — that’s the one that can hear you.");
+      return;
+    }
     void startLecture(pick).catch((error) => {
       toast.error(error instanceof Error ? error.message : "Allow the microphone, then hit Rec.");
     });

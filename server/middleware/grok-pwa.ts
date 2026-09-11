@@ -53,6 +53,7 @@ function injectHeadStreaming(response: Response, host: string): Response {
   );
   const headers = new Headers(response.headers);
   headers.delete("content-length");
+  headers.set("permissions-policy", "microphone=(self), camera=()");
   return new Response(transformed, {
     status: response.status,
     statusText: response.statusText,

@@ -23,6 +23,7 @@ import { Route as UsageRouteImport } from './routes/usage'
 import { Route as BillingConfirmRouteImport } from './routes/billing.confirm'
 import { Route as ClassIdRouteImport } from './routes/class.$id'
 import { Route as LectureIdRouteImport } from './routes/lecture.$id'
+import { Route as RecordBoothRouteImport } from './routes/record.booth'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
 const IndexRoute = IndexRouteImport.update({
@@ -95,6 +96,11 @@ const LectureIdRoute = LectureIdRouteImport.update({
   path: '/lecture/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RecordBoothRoute = RecordBoothRouteImport.update({
+  id: '/booth',
+  path: '/booth',
+  getParentRoute: () => RecordRoute,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -109,13 +115,14 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/pricing': typeof PricingRoute
   '/privacy': typeof PrivacyRoute
-  '/record': typeof RecordRoute
+  '/record': typeof RecordRouteWithChildren
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/usage': typeof UsageRoute
   '/billing/confirm': typeof BillingConfirmRoute
   '/class/$id': typeof ClassIdRoute
   '/lecture/$id': typeof LectureIdRoute
+  '/record/booth': typeof RecordBoothRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
@@ -126,13 +133,14 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/pricing': typeof PricingRoute
   '/privacy': typeof PrivacyRoute
-  '/record': typeof RecordRoute
+  '/record': typeof RecordRouteWithChildren
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/usage': typeof UsageRoute
   '/billing/confirm': typeof BillingConfirmRoute
   '/class/$id': typeof ClassIdRoute
   '/lecture/$id': typeof LectureIdRoute
+  '/record/booth': typeof RecordBoothRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesById {
@@ -144,13 +152,14 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/pricing': typeof PricingRoute
   '/privacy': typeof PrivacyRoute
-  '/record': typeof RecordRoute
+  '/record': typeof RecordRouteWithChildren
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/usage': typeof UsageRoute
   '/billing/confirm': typeof BillingConfirmRoute
   '/class/$id': typeof ClassIdRoute
   '/lecture/$id': typeof LectureIdRoute
+  '/record/booth': typeof RecordBoothRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
@@ -170,6 +179,7 @@ export interface FileRouteTypes {
     | '/billing/confirm'
     | '/class/$id'
     | '/lecture/$id'
+    | '/record/booth'
     | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -187,6 +197,7 @@ export interface FileRouteTypes {
     | '/billing/confirm'
     | '/class/$id'
     | '/lecture/$id'
+    | '/record/booth'
     | '/api/auth/$'
   id:
     | '__root__'
@@ -204,6 +215,7 @@ export interface FileRouteTypes {
     | '/billing/confirm'
     | '/class/$id'
     | '/lecture/$id'
+    | '/record/booth'
     | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
@@ -215,7 +227,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   PricingRoute: typeof PricingRoute
   PrivacyRoute: typeof PrivacyRoute
-  RecordRoute: typeof RecordRoute
+  RecordRoute: typeof RecordRouteWithChildren
   SearchRoute: typeof SearchRoute
   SettingsRoute: typeof SettingsRoute
   UsageRoute: typeof UsageRoute
@@ -325,6 +337,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LectureIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/record/booth': {
+      id: '/record/booth'
+      path: '/booth'
+      fullPath: '/record/booth'
+      preLoaderRoute: typeof RecordBoothRouteImport
+      parentRoute: typeof RecordRoute
+    }
     '/api/auth/$': {
       id: '/api/auth/$'
       path: '/api/auth/$'
@@ -335,6 +354,17 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface RecordRouteChildren {
+  RecordBoothRoute: typeof RecordBoothRoute
+}
+
+const RecordRouteChildren: RecordRouteChildren = {
+  RecordBoothRoute: RecordBoothRoute,
+}
+
+const RecordRouteWithChildren =
+  RecordRoute._addFileChildren(RecordRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ClassesRoute: ClassesRoute,
@@ -343,7 +373,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   PricingRoute: PricingRoute,
   PrivacyRoute: PrivacyRoute,
-  RecordRoute: RecordRoute,
+  RecordRoute: RecordRouteWithChildren,
   SearchRoute: SearchRoute,
   SettingsRoute: SettingsRoute,
   UsageRoute: UsageRoute,

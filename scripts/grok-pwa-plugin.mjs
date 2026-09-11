@@ -113,6 +113,9 @@ function wrapHtmlResponses(middlewares, cwd) {
       const isHtml = String(res.getHeader("content-type") ?? "").includes("text/html");
       const encoded = Boolean(res.getHeader("content-encoding"));
       mode = isHtml && !encoded ? "inject" : "passthrough";
+      if (!res.headersSent) {
+        res.setHeader("permissions-policy", "microphone=(self), camera=()");
+      }
       // Streaming SSR flushes headers before the first body chunk, so the
       // header may no longer be removable — chunked responses don't carry one.
       if (mode === "inject" && !res.headersSent) res.removeHeader("content-length");

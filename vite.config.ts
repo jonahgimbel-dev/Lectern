@@ -9,6 +9,8 @@ import { nitro } from "nitro/vite";
 // @ts-expect-error JS plugin alongside the TS vite config
 import { grokPwaPlugin } from "./scripts/grok-pwa-plugin.mjs";
 // @ts-expect-error JS plugin alongside the TS vite config
+import { sttLivePlugin } from "./scripts/stt-live-plugin.mjs";
+// @ts-expect-error JS plugin alongside the TS vite config
 import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
 import { isMigrationFile } from "./scripts/migration-plan.mjs";
 
@@ -165,6 +167,7 @@ export default defineConfig(({ command, isPreview }) => ({
     appEnvPlugin(),
     // PWA head + ?install=1 tutorial page; runs before Start/Nitro.
     grokPwaPlugin(),
+    sttLivePlugin(),
     tailwindcss(),
     tanstackStart(),
     ...(command === "build" || isPreview

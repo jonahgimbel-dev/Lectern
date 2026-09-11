@@ -57,7 +57,7 @@ export function getBearerToken(): string | null {
   }
 }
 
-function setBearerToken(token: string | null): void {
+export function setBearerToken(token: string | null): void {
   if (typeof window === "undefined") return;
   try {
     if (token) window.sessionStorage.setItem(BEARER_KEY, token);

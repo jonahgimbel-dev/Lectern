@@ -1,6 +1,7 @@
 import { createCourse, saveLecture } from "@/functions/data";
 import { transcribeAudio } from "@/functions/transcribe";
 import { blobToBase64, blobToWav, blobToWavSlices, pickRecorderMime } from "@/lib/wav";
+import { openSttLive, TARGET_RATE, type SttLive } from "@/lib/stt-stream";
 
 const BAR_COUNT = 24;
 
@@ -25,11 +26,9 @@ const listeners = new Set<() => void>();
 let snap: LectureSnap = idleSnap();
 
 let recorder: MediaRecorder | null = null;
-let liveRec: MediaRecorder | null = null;
 let stream: MediaStream | null = null;
 let speech: SpeechRec | null = null;
 let ticker: number | null = null;
-let liveTimer: number | null = null;
 let startedAt = 0;
 let pausedAccum = 0;
 let pauseBegan = 0;
@@ -37,12 +36,15 @@ let chunks: Blob[] = [];
 let sttParts: string[] = [];
 let mime = "";
 let captions = "";
+let livePartial = "";
 let wakeLock: WakeLockSentinel | null = null;
 let audioCtx: AudioContext | null = null;
-let analyser: AnalyserNode | null = null;
+let processor: ScriptProcessorNode | null = null;
 let sourceNode: MediaStreamAudioSourceNode | null = null;
 let sinkNode: MediaStreamAudioDestinationNode | null = null;
-let timeBuf: Float32Array<ArrayBuffer> | null = null;
+let resamplePos = 0;
+let pcmTail = new Int16Array(0);
+let stt: SttLive | null = null;
 
 function idleSnap(): LectureSnap {
   return {
@@ -64,7 +66,7 @@ function idleSnap(): LectureSnap {
 }
 
 function shownText() {
-  return [sttParts.join(" "), captions].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  return [sttParts.join(" "), livePartial, captions].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 }
 
 function emit(patch: Partial<LectureSnap> = {}) {
@@ -88,7 +90,7 @@ function listeningCopy() {
 
 function bindDebug() {
   if (typeof window === "undefined") return;
-  window.__lectern = { snap, pcmLen: chunks.length, parts: sttParts };
+  window.__lectern = { snap, pcmLen: pcmTail.length, parts: sttParts };
 }
 
 export function getLectureSession() {
@@ -184,7 +186,8 @@ function releaseAwake() {
   }
 }
 
-function waitForStop(rec: MediaRecorder | null) {
+function waitForStop() {
+  const rec = recorder;
   if (!rec || rec.state === "inactive") return Promise.resolve();
   return new Promise<void>((resolve) => {
     rec.addEventListener("stop", () => resolve(), { once: true });
@@ -197,96 +200,52 @@ function waitForStop(rec: MediaRecorder | null) {
   });
 }
 
-function stopLiveClip() {
-  if (liveTimer) window.clearTimeout(liveTimer);
-  liveTimer = null;
-  if (liveRec && liveRec.state !== "inactive") {
-    try {
-      liveRec.stop();
-    } catch {
-      /* ignore */
-    }
+function downsample(input: Float32Array, fromRate: number) {
+  const ratio = fromRate / TARGET_RATE;
+  const out: number[] = [];
+  let i = resamplePos;
+  while (i < input.length) {
+    const sample = Math.max(-1, Math.min(1, input[Math.floor(i)] ?? 0));
+    out.push(sample < 0 ? sample * 0x8000 : sample * 0x7fff);
+    i += ratio;
   }
+  resamplePos = i - input.length;
+  const pcm = new Int16Array(out.length);
+  for (let n = 0; n < out.length; n += 1) pcm[n] = out[n] ?? 0;
+  return pcm;
 }
 
-function rotateLive() {
-  if (!stream || !snap.live || snap.paused) return;
-  const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-  const bits: Blob[] = [];
-  rec.ondataavailable = (event) => {
-    if (event.data.size) bits.push(event.data);
+function attachCapture(nextStream: MediaStream) {
+  const ctx = new AudioContext();
+  void ctx.resume();
+  const source = ctx.createMediaStreamSource(nextStream);
+  const node = ctx.createScriptProcessor(4096, 1, 1);
+  const sink = ctx.createMediaStreamDestination();
+  node.onaudioprocess = (event) => {
+    if (!snap.live || snap.paused) return;
+    const input = event.inputBuffer.getChannelData(0);
+    let energy = 0;
+    for (let i = 0; i < input.length; i += 1) energy += input[i] * input[i];
+    const rms = Math.sqrt(energy / Math.max(1, input.length));
+    const levels = Array.from({ length: BAR_COUNT }, (_, idx) => {
+      const at = Math.min(input.length - 1, Math.floor((idx / BAR_COUNT) * input.length));
+      return Math.min(1, Math.max(0.06, Math.abs(input[at] ?? 0) * 8));
+    });
+    emit({ hearing: rms > 0.004 || Boolean(captions || livePartial), levels, bufferedSec: elapsed() });
+    const pcm = downsample(new Float32Array(input), ctx.sampleRate);
+    if (pcm.length) stt?.sendPcm(pcm);
   };
-  rec.onstop = () => {
-    const blob = new Blob(bits, { type: rec.mimeType || mime || "audio/webm" });
-    if (blob.size > 800) {
-      void transcribeBlob(blob).then((text) => {
-        if (!text || !snap.live) return;
-        sttParts = [...sttParts, text];
-        emit({ captions: shownText(), lastError: "" });
-      });
-    }
-    if (snap.live && !snap.paused) rotateLive();
-  };
-  try {
-    rec.start();
-    liveRec = rec;
-    liveTimer = window.setTimeout(() => {
-      if (rec.state !== "inactive") {
-        try {
-          rec.stop();
-        } catch {
-          rotateLive();
-        }
-      }
-    }, 4000);
-  } catch {
-    liveRec = null;
-  }
+  source.connect(node);
+  node.connect(sink);
+  audioCtx = ctx;
+  sourceNode = source;
+  processor = node;
+  sinkNode = sink;
 }
 
-function pullMeter() {
-  const buf = timeBuf;
-  if (!analyser || !buf || !snap.live || snap.paused) return;
-  analyser.getFloatTimeDomainData(buf);
-  let energy = 0;
-  for (let i = 0; i < buf.length; i += 1) energy += buf[i] * buf[i];
-  const rms = Math.sqrt(energy / Math.max(1, buf.length));
-  const hearing = rms > 0.004 || Boolean(captions);
-  const levels = Array.from({ length: BAR_COUNT }, (_, idx) => {
-    const at = Math.min(buf.length - 1, Math.floor((idx / BAR_COUNT) * buf.length));
-    return Math.min(1, Math.max(0.06, Math.abs(buf[at] ?? 0) * 8));
-  });
-  emit({
-    hearing,
-    levels,
-    bufferedSec: chunks.reduce((sum, part) => sum + part.size, 0) / 16_000,
-  });
-}
-
-function attachMeter(nextStream: MediaStream) {
+function releaseCapture() {
   try {
-    const ctx = new AudioContext();
-    void ctx.resume();
-    const source = ctx.createMediaStreamSource(nextStream);
-    const node = ctx.createAnalyser();
-    node.fftSize = 2048;
-    node.smoothingTimeConstant = 0;
-    const sink = ctx.createMediaStreamDestination();
-    source.connect(node);
-    node.connect(sink);
-    audioCtx = ctx;
-    sourceNode = source;
-    analyser = node;
-    sinkNode = sink;
-    timeBuf = new Float32Array(new ArrayBuffer(node.fftSize * 4));
-  } catch {
-    /* captions and MediaRecorder still run */
-  }
-}
-
-function releaseMeter() {
-  try {
-    analyser?.disconnect();
+    processor?.disconnect();
   } catch {
     /* ignore */
   }
@@ -300,10 +259,9 @@ function releaseMeter() {
   } catch {
     /* ignore */
   }
-  analyser = null;
+  processor = null;
   sinkNode = null;
   sourceNode = null;
-  timeBuf = null;
   void audioCtx?.close().catch(() => undefined);
   audioCtx = null;
 }
@@ -312,7 +270,6 @@ function tick() {
   if (ticker) window.clearInterval(ticker);
   ticker = window.setInterval(() => {
     if (!snap.live) return;
-    pullMeter();
     emit({ hidden: document.hidden, status: snap.paused ? "Paused." : snap.lastError || listeningCopy() });
   }, 250);
 }
@@ -336,7 +293,7 @@ function onBeforeUnload(event: BeforeUnloadEvent) {
   event.returnValue = "";
 }
 
-async function transcribeBlob(blob: Blob) {
+async function transcribeArchive(blob: Blob) {
   const parts: string[] = [];
   try {
     const slices = await blobToWavSlices(blob);
@@ -349,7 +306,6 @@ async function transcribeBlob(blob: Blob) {
         },
       });
       if (spoken.ok && spoken.text) parts.push(spoken.text.trim());
-      else if (!spoken.ok) emit({ lastError: spoken.error });
     }
   } catch {
     try {
@@ -362,7 +318,7 @@ async function transcribeBlob(blob: Blob) {
       });
       if (spoken.ok && spoken.text) parts.push(spoken.text.trim());
     } catch {
-      /* captions remain */
+      /* live captions remain */
     }
   }
   return parts.join(" ").replace(/\s+/g, " ").trim();
@@ -379,6 +335,16 @@ export function setLectureCourse(courseId: string) {
   emit({ courseId });
 }
 
+export function inMicBlockedFrame() {
+  if (typeof window === "undefined") return false;
+  try {
+    if (window.self !== window.top) return true;
+  } catch {
+    return true;
+  }
+  return window.location.hostname.endsWith(".grok-sandbox.com") && window.self !== window.top;
+}
+
 export async function startLecture(courseId = "") {
   if (snap.saving) return;
   if (snap.live && !snap.starting) return;
@@ -389,6 +355,9 @@ export async function startLecture(courseId = "") {
   chunks = [];
   sttParts = [];
   captions = "";
+  livePartial = "";
+  resamplePos = 0;
+  pcmTail = new Int16Array(0);
   mime = pickRecorderMime();
 
   emit({
@@ -433,14 +402,27 @@ export async function startLecture(courseId = "") {
   };
   rec.start(1000);
   recorder = rec;
-  attachMeter(nextStream);
-  rotateLive();
-  if (!speech) startSpeech();
-  emit({
-    live: true,
-    starting: false,
-    status: listeningCopy(),
+  stt = openSttLive({
+    onPartial(text, isFinal) {
+      if (isFinal) {
+        sttParts = [...sttParts, text];
+        livePartial = "";
+      } else {
+        livePartial = text;
+      }
+      emit({ captions: shownText(), hearing: true, lastError: "" });
+    },
+    onError(message) {
+      emit({ lastError: message });
+    },
   });
+  try {
+    attachCapture(nextStream);
+  } catch {
+    /* archive + speech still run */
+  }
+  if (!speech) startSpeech();
+  emit({ live: true, starting: false, status: listeningCopy() });
 }
 
 export async function saveLectureSession() {
@@ -448,15 +430,14 @@ export async function saveLectureSession() {
   if (!snap.live && !snap.draft) return { ok: false as const, error: "Nothing to save." };
   emit({ saving: true, status: "Wrapping up audio…" });
   stopSpeech();
-  stopLiveClip();
-  await waitForStop(liveRec);
-  liveRec = null;
-  await waitForStop(recorder);
+  await waitForStop();
   recorder = null;
+  const liveText = stt ? await stt.close() : "";
+  stt = null;
   stream?.getTracks().forEach((track) => track.stop());
   stream = null;
   releaseAwake();
-  releaseMeter();
+  releaseCapture();
   if (ticker) window.clearInterval(ticker);
   ticker = null;
   document.removeEventListener("visibilitychange", onVisibility);
@@ -465,8 +446,8 @@ export async function saveLectureSession() {
   startedAt = 0;
   const blob = new Blob(chunks, { type: mime || "audio/webm" });
   emit({ live: false, paused: false, status: "Transcribing…" });
-  const spoken = blob.size > 500 ? await transcribeBlob(blob) : "";
-  const transcript = spoken || shownText();
+  const spoken = blob.size > 500 ? await transcribeArchive(blob) : "";
+  const transcript = spoken || liveText || shownText();
   if (!transcript) {
     emit({
       saving: false,
@@ -491,6 +472,7 @@ export async function saveLectureSession() {
     return result;
   }
   captions = "";
+  livePartial = "";
   sttParts = [];
   chunks = [];
   emit({ ...idleSnap(), courseId: course.id });
@@ -557,8 +539,8 @@ export async function saveUploadedLecture(file: File, courseId?: string) {
 
 export function discardLecture() {
   stopSpeech();
-  stopLiveClip();
-  liveRec = null;
+  void stt?.close();
+  stt = null;
   if (recorder && recorder.state !== "inactive") {
     try {
       recorder.stop();
@@ -570,7 +552,7 @@ export function discardLecture() {
   stream?.getTracks().forEach((track) => track.stop());
   stream = null;
   releaseAwake();
-  releaseMeter();
+  releaseCapture();
   if (ticker) window.clearInterval(ticker);
   ticker = null;
   document.removeEventListener("visibilitychange", onVisibility);
@@ -578,6 +560,7 @@ export function discardLecture() {
   chunks = [];
   sttParts = [];
   captions = "";
+  livePartial = "";
   startedAt = 0;
   pausedAccum = 0;
   pauseBegan = 0;
@@ -596,7 +579,6 @@ export function togglePause() {
     }
     emit({ paused: false, status: listeningCopy() });
     startSpeech();
-    rotateLive();
     holdAwake();
     void audioCtx?.resume();
     return;
@@ -607,7 +589,6 @@ export function togglePause() {
   } catch {
     /* some browsers lack pause */
   }
-  stopLiveClip();
   stopSpeech();
   emit({ paused: true, status: "Paused.", hearing: false });
 }
