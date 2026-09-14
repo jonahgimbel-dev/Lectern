@@ -149,29 +149,11 @@ async function reassign(sql: Sql, fromId: string, toId: string): Promise<number>
 }
 
 export async function restoreForUser(sql: Sql, userId: string): Promise<{ moved: number; from: string[] }> {
+  if (!(await isOwner(sql, userId))) return { moved: 0, from: [] };
   const census = await loadCensus(sql, userId);
-  if (census.mine.classes > 0) return { moved: 0, from: [] };
-  const [user] = await sql<{ email: string | null; name: string | null }>`
-    select email, name from "user" where id = ${userId} limit 1
-  `;
-  const ownerLike = identityIsOwner({ email: user?.email, name: user?.name });
-  const from: string[] = [];
-  if (ownerLike) {
-    for (const desk of census.desks) {
-      if (desk.userId !== userId && !from.includes(desk.userId)) from.push(desk.userId);
-    }
-  } else {
-    const previousOwner = census.desks.find((desk) => desk.wasOwner && desk.userId !== userId);
-    if (previousOwner) from.push(previousOwner.userId);
-    for (const desk of census.desks) {
-      if (desk.userId === userId) continue;
-      if (desk.signedIn) continue;
-      if (!from.includes(desk.userId)) from.push(desk.userId);
-    }
-    if (!from.length && census.desks.length === 1 && census.desks[0].userId !== userId) {
-      from.push(census.desks[0].userId);
-    }
-  }
+  const from = census.desks
+    .filter((desk) => desk.userId !== userId && !desk.signedIn)
+    .map((desk) => desk.userId);
   let moved = 0;
   for (const id of from) moved += await reassign(sql, id, userId);
   return { moved, from };
@@ -181,13 +163,25 @@ export const inspectRecover = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }): Promise<RecoverCensus> => {
     const sql = await getSql();
-    return loadCensus(sql, context.userId);
+    const census = await loadCensus(sql, context.userId);
+    if (!(await isOwner(sql, context.userId))) {
+      return {
+        ...census,
+        desks: census.desks.filter((desk) => desk.userId === context.userId),
+        orphans: 0,
+        recoverable: false,
+      };
+    }
+    return census;
   });
 
 export const restoreMyPreviousDesk = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
     const sql = await getSql();
+    if (!(await isOwner(sql, context.userId))) {
+      return { ok: false as const, error: "Only the Lectern owner can restore another desk.", moved: 0, from: [] as string[] };
+    }
     const result = await restoreForUser(sql, context.userId);
     return { ok: true as const, ...result };
   });

@@ -95,6 +95,10 @@ export function RestoreDesk({
             setBusy("mine");
             void restoreMyPreviousDesk()
               .then((result) => {
+                if (!result.ok) {
+                  toast.error(result.error);
+                  return;
+                }
                 toast.success(result.moved ? `Restored ${result.moved} rows.` : "Nothing left to attach.");
                 onRestored?.();
                 return load();

@@ -104,16 +104,6 @@ async function resolveOwner(sql: Awaited<ReturnType<typeof getSql>>, userId: str
     return { isOwner: true, canClaim: false };
   }
   const [me] = await sql<{ is_owner: boolean }>`select is_owner from profiles where user_id = ${userId}`;
-  const [owners] = await sql<{ n: number | string }>`select count(*) as n from profiles where is_owner = true`;
-  const claimed = num(owners?.n) > 0;
-  if (!claimed) {
-    try {
-      await promoteOwner(sql, userId);
-      return { isOwner: true, canClaim: false };
-    } catch {
-      return { isOwner: false, canClaim: true };
-    }
-  }
   return { isOwner: Boolean(me?.is_owner), canClaim: false };
 }
 

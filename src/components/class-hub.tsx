@@ -1,7 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
-import { RestoreDesk } from "@/components/restore-desk";
 import { DueCalendar } from "@/components/due-calendar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,12 +20,9 @@ export function ClassHub({ desk, onReload }: { desk: Desk; onReload: () => void 
           </p>
         </section>
         {desk.courses.length === 0 ? (
-          <div className="space-y-4">
-            <RestoreDesk variant="hub" onRestored={onReload} />
-            <p className="rounded-xl border border-border bg-surface p-5 text-muted-foreground">
-              Add a class, or connect Canvas from Connect.
-            </p>
-          </div>
+          <p className="rounded-xl border border-border bg-surface p-5 text-muted-foreground">
+            Your desk is empty. Add a class, or connect Canvas from Connect.
+          </p>
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2">
             {desk.courses.map((course) => (
