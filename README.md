@@ -6,12 +6,11 @@ Live app: [https://jolly-wolf-brave-charm.grok.me](https://jolly-wolf-brave-char
 
 ## What it does
 
-- **Record** a lecture (mic + live captions), then file it to a class
-- **Class hub** with lectures, syllabus, flashcards, practice quiz, exam cram
-- **Calendar** from Canvas feed, recordings, and dates you add
-- **Connect Canvas** without an API token (calendar feed, paste roster, snapshot)
-- **Accounts** (email, Google, X) so each student’s desk is saved
-- **Owner usage** page for Jonah to see who’s using Lectern
+- **Record** a lecture (room mic or share tab audio), live captions, then file it to a class
+- **Class hub** with lectures, syllabus, flashcards, practice quiz, exam cram, and a due-date calendar
+- **Connect Canvas** without an API token — screenshot the dashboard, paste class names, or import the calendar feed
+- **Accounts** (email, Google, X) so each student only sees their own empty desk until they add classes
+- **Owner dashboard** (Jonah only): students, activity, invite codes, Stripe, restore leftover data
 
 ## Run it
 
