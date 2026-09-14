@@ -1,5 +1,5 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { RestoreDesk } from "@/components/restore-desk";
@@ -8,12 +8,26 @@ import { SignInPrompt } from "@/components/sign-in-prompt";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { claimOwner, getOwnerState, getUsage, saveStripeConnect, type UsageStats } from "@/functions/usage";
-import { createInvite, grantPro, listInvites, listStudents, revokeInvite, type InviteRow, type StudentRow } from "@/functions/invites";
-import { formatAgo } from "@/lib/format";
+import {
+  clearStudentDesk,
+  createInvite,
+  grantPro,
+  listInvites,
+  listStudents,
+  revokeInvite,
+  revokePro,
+  type InviteRow,
+  type StudentRow,
+} from "@/functions/invites";
+import { formatAgo, formatDuration, formatLectureDate } from "@/lib/format";
 import { joinInviteText } from "@/lib/join-text";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/usage")({ component: UsagePage });
+
+const TABS = ["Overview", "Students", "Activity", "Codes", "Billing"] as const;
+type Tab = (typeof TABS)[number];
 
 function UsagePage() {
   return (
@@ -21,9 +35,9 @@ function UsagePage() {
       <SessionReady>
         {(user) =>
           user ? (
-            <UsageDesk />
+            <OwnerDesk />
           ) : (
-            <SignInPrompt title="Owner sign-in" copy="Usage is only for the person who runs Lectern." next="/usage" />
+            <SignInPrompt title="Owner sign-in" copy="This dashboard is only for the person who runs Lectern." next="/usage" />
           )
         }
       </SessionReady>
@@ -31,12 +45,13 @@ function UsagePage() {
   );
 }
 
-function UsageDesk() {
+function OwnerDesk() {
   const user = useCurrentUser();
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [canClaim, setCanClaim] = useState(false);
   const [allowed, setAllowed] = useState<boolean | null>(null);
   const [claiming, setClaiming] = useState(false);
+  const [tab, setTab] = useState<Tab>("Overview");
 
   async function load() {
     const owner = await getOwnerState();
@@ -66,6 +81,7 @@ function UsageDesk() {
         <h1 className="font-display text-3xl tracking-tight">
           {canClaim ? "Is this your Lectern?" : "This page isn’t for students"}
         </h1>
+        <p className="mt-2 text-sm text-muted-foreground">Owner tools stay on your account only.</p>
         <div className="mt-5 flex gap-2">
           {canClaim ? (
             <Button
@@ -87,35 +103,77 @@ function UsageDesk() {
             <Link to="/classes">Back to classes</Link>
           </Button>
         </div>
-        <div className="mt-6">
-          <RestoreDesk variant="usage" />
-        </div>
       </div>
     );
   }
   if (!stats) return null;
+
+  return (
+    <div className="space-y-8">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Owner</p>
+          <h1 className="mt-1 font-display text-4xl tracking-tight">Dashboard</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {stats.ownerEmail || user?.primaryEmail} · {stats.ownerHow === "email" ? "signed in as owner" : "claimed this Lectern"}
+          </p>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Your desk: {stats.mine.classes} classes · {stats.mine.lectures} lectures
+        </p>
+      </header>
+
+      <nav className="flex flex-wrap gap-2">
+        {TABS.map((item) => (
+          <button
+            key={item}
+            type="button"
+            onClick={() => setTab(item)}
+            className={cn(
+              "min-h-11 rounded-lg px-4 text-sm font-medium",
+              tab === item ? "bg-primary text-primary-fg" : "bg-surface text-muted-foreground hover:text-fg",
+            )}
+          >
+            {item}
+          </button>
+        ))}
+      </nav>
+
+      {tab === "Overview" ? <Overview stats={stats} /> : null}
+      {tab === "Students" ? <StudentDesk onChanged={() => void load()} /> : null}
+      {tab === "Activity" ? <ActivityFeed stats={stats} /> : null}
+      {tab === "Codes" ? <InviteDesk /> : null}
+      {tab === "Billing" ? (
+        <div className="space-y-6">
+          <StripeBox
+            ready={stats.stripeReady}
+            secretHint={stats.stripeSecretHint}
+            webhookHint={stats.stripeWebhookHint}
+            onSaved={() => void load()}
+          />
+          <RestoreDesk variant="usage" onRestored={() => void load()} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Overview({ stats }: { stats: UsageStats }) {
   const tiles = [
     ["Active now", stats.activeNow, "Last 15 minutes"],
     ["Today", stats.activeToday, "Opened or recorded today"],
     ["This week", stats.activeWeek, "Touched Lectern in 7 days"],
     ["Students", stats.students, `${stats.newThisWeek} new this week`],
     ["Pro", stats.proStudents, `${stats.freeStudents} on Free`],
-    ["Lectures", stats.lecturesThisWeek, `${stats.lecturesToday} today`],
-    ["Classes", stats.classes, `${stats.cards} cards`],
+    ["Lectures", stats.lectures, `${stats.lecturesToday} today · ${stats.lecturesThisWeek} this week`],
+    ["Classes", stats.classes, `${stats.cards} cards · ${stats.exams} dues`],
+    ["Empty desks", stats.emptyDesks, `${stats.neverRecorded} haven’t recorded`],
     ["Canvas", stats.canvas, "Connected feeds"],
   ] as const;
+  const peak = Math.max(1, ...stats.daily.map((row) => row.lectures));
   return (
-    <div className="space-y-8">
-      <h1 className="font-display text-4xl tracking-tight">How students use Lectern</h1>
-      <p className="text-sm text-muted-foreground">Signed in as {stats.ownerEmail || user?.primaryEmail}</p>
-      <RestoreDesk variant="usage" onRestored={() => void load()} />
-      <StripeBox
-        ready={stats.stripeReady}
-        secretHint={stats.stripeSecretHint}
-        webhookHint={stats.stripeWebhookHint}
-        onSaved={() => void load()}
-      />
-      <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="space-y-6">
+      <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {tiles.map(([label, value, hint]) => (
           <li key={label} className="rounded-xl border border-border bg-surface p-5">
             <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">{label}</p>
@@ -124,9 +182,62 @@ function UsageDesk() {
           </li>
         ))}
       </ul>
-      <InviteDesk />
-      <StudentDesk />
+      <section className="rounded-xl border border-border bg-surface p-5">
+        <h2 className="font-display text-xl">Lectures, last 14 days</h2>
+        {stats.daily.length === 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">No lectures in this window yet.</p>
+        ) : (
+          <div className="mt-4 flex h-36 items-end gap-1">
+            {stats.daily.map((row) => (
+              <div key={row.day} className="flex h-full min-w-0 flex-1 flex-col justify-end" title={`${row.day}: ${row.lectures}`}>
+                <span
+                  className="w-full rounded-t bg-accent"
+                  style={{ height: `${Math.max(8, Math.round((row.lectures / peak) * 100))}%` }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+      {stats.schools.length > 0 ? (
+        <section className="rounded-xl border border-border bg-surface p-5">
+          <h2 className="font-display text-xl">Schools</h2>
+          <ul className="mt-3 divide-y divide-border text-sm">
+            {stats.schools.map((row) => (
+              <li key={row.school} className="flex justify-between py-2">
+                <span>{row.school}</span>
+                <span className="text-muted-foreground">{row.students}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </div>
+  );
+}
+
+function ActivityFeed({ stats }: { stats: UsageStats }) {
+  if (!stats.recent.length) {
+    return (
+      <p className="rounded-xl border border-border bg-surface p-5 text-muted-foreground">
+        No lectures yet. When students record, they show up here.
+      </p>
+    );
+  }
+  return (
+    <section className="rounded-xl border border-border bg-surface p-5">
+      <h2 className="font-display text-xl">Latest lectures</h2>
+      <ul className="mt-4 divide-y divide-border">
+        {stats.recent.map((row) => (
+          <li key={row.id} className="py-3">
+            <p className="font-medium">{row.title}</p>
+            <p className="text-sm text-muted-foreground">
+              {row.student} · {row.className} · {formatDuration(row.durationSec)} · {formatLectureDate(Date.parse(row.startedAt))}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -145,7 +256,7 @@ function StripeBox({
   const [webhookSecret, setWebhookSecret] = useState("");
   return (
     <section className="rounded-xl border-2 border-primary bg-surface p-5 space-y-3">
-      <h2 className="font-display text-2xl">Connect Stripe</h2>
+      <h2 className="font-display text-2xl">Stripe</h2>
       <p className="text-sm text-muted-foreground">
         {ready ? `Secret on file: ${secretHint}` : "Paste sk_live and whsec from Stripe. Do not put them in chat."}
       </p>
@@ -172,35 +283,44 @@ function StripeBox({
 function InviteDesk() {
   const [invites, setInvites] = useState<InviteRow[]>([]);
   const [label, setLabel] = useState("");
+  const [maxUses, setMaxUses] = useState("10");
   useEffect(() => {
     void listInvites().then(setInvites).catch(() => undefined);
   }, []);
   return (
     <section className="rounded-xl border border-border bg-surface p-5">
       <h2 className="font-display text-xl">Free access codes</h2>
+      <p className="mt-1 text-sm text-muted-foreground">Text a code. It unlocks Pro without Stripe.</p>
       <form
         className="mt-3 flex flex-wrap gap-2"
         onSubmit={(event) => {
           event.preventDefault();
-          void createInvite({ data: { label, maxUses: 10 } }).then(async (result) => {
+          const uses = Math.max(1, Number(maxUses) || 10);
+          void createInvite({ data: { label, maxUses: uses } }).then(async (result) => {
             if (!result.ok) {
               toast.error(result.error);
               return;
             }
             toast.success(`Code ${result.code}`);
+            setLabel("");
             setInvites(await listInvites());
           });
         }}
       >
-        <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Label" className="max-w-xs" />
+        <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Label, like AP Bio" className="max-w-xs" />
+        <Input value={maxUses} onChange={(e) => setMaxUses(e.target.value)} placeholder="Uses" className="w-24" />
         <Button type="submit">Make a code</Button>
       </form>
       <ul className="mt-4 divide-y divide-border">
         {invites.map((invite) => (
           <li key={invite.id} className="flex flex-wrap items-center justify-between gap-2 py-3">
-            <p className="font-mono text-sm">
-              {invite.code} · {invite.uses}/{invite.maxUses}
-            </p>
+            <div>
+              <p className="font-mono text-sm">
+                {invite.code} · {invite.uses}/{invite.maxUses}
+                {invite.revoked ? " · revoked" : ""}
+              </p>
+              {invite.label ? <p className="text-xs text-muted-foreground">{invite.label}</p> : null}
+            </div>
             <div className="flex gap-2">
               <Button
                 size="sm"
@@ -225,34 +345,138 @@ function InviteDesk() {
   );
 }
 
-function StudentDesk() {
+function StudentDesk({ onChanged }: { onChanged: () => void }) {
   const [students, setStudents] = useState<StudentRow[]>([]);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "active" | "empty" | "free" | "pro">("all");
+
+  async function reload() {
+    setStudents(await listStudents());
+    onChanged();
+  }
+
   useEffect(() => {
     void listStudents().then(setStudents).catch(() => undefined);
   }, []);
+
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return students.filter((student) => {
+      if (filter === "active" && !student.signedIn) return false;
+      if (filter === "empty" && student.classes > 0) return false;
+      if (filter === "free" && (student.isOwner || student.plan === "pro")) return false;
+      if (filter === "pro" && student.plan !== "pro" && !student.isOwner) return false;
+      if (!q) return true;
+      return `${student.name} ${student.email} ${student.school}`.toLowerCase().includes(q);
+    });
+  }, [students, query, filter]);
+
+  function exportCsv() {
+    const header = "name,email,plan,classes,lectures,school,last_seen,canvas";
+    const lines = students.map((student) =>
+      [student.name, student.email, student.plan, student.classes, student.lectures, student.school, student.lastSeen ?? "", student.canvas ? "yes" : "no"]
+        .map((value) => `"${String(value).replaceAll('"', '""')}"`)
+        .join(","),
+    );
+    const blob = new Blob([`${header}\n${lines.join("\n")}`], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "lectern-students.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <section className="rounded-xl border border-border bg-surface p-5">
-      <h2 className="font-display text-xl">Who’s using it</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="font-display text-xl">Students</h2>
+        <Button size="sm" variant="outline" onClick={exportCsv}>
+          Export CSV
+        </Button>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name or email" className="max-w-xs" />
+        {(["all", "active", "empty", "free", "pro"] as const).map((item) => (
+          <button
+            key={item}
+            type="button"
+            onClick={() => setFilter(item)}
+            className={cn(
+              "min-h-11 rounded-lg px-3 text-sm capitalize",
+              filter === item ? "bg-primary text-primary-fg" : "bg-secondary text-muted-foreground",
+            )}
+          >
+            {item}
+          </button>
+        ))}
+      </div>
       <ul className="mt-4 divide-y divide-border">
-        {students.map((student) => (
-          <li key={student.id} className="flex flex-wrap items-center justify-between gap-2 py-3">
+        {shown.map((student) => (
+          <li key={student.id} className="flex flex-wrap items-start justify-between gap-3 py-3">
             <div>
               <p className="font-medium">
                 {student.signedIn ? <span className="mr-2 inline-block size-1.5 rounded-full bg-good" /> : null}
                 {student.name || student.email}
+                {student.isOwner ? <span className="ml-2 text-xs uppercase tracking-wider text-accent">Owner</span> : null}
               </p>
               <p className="text-xs text-muted-foreground">
-                {student.email} · last seen {formatAgo(student.lastSeen)} · {student.classes} classes
+                {student.email} · {student.plan}
+                {student.school ? ` · ${student.school}` : ""} · {student.classes} classes · {student.lectures} lectures
+                {student.canvas ? " · Canvas" : ""} · last seen {formatAgo(student.lastSeen)}
               </p>
             </div>
-            {!student.isOwner && student.plan !== "pro" ? (
-              <Button size="sm" variant="outline" onClick={() => void grantPro({ data: { userId: student.id } }).then(() => listStudents().then(setStudents))}>
-                Give Pro
-              </Button>
+            {!student.isOwner ? (
+              <div className="flex flex-wrap gap-2">
+                {student.plan !== "pro" ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      void grantPro({ data: { userId: student.id } }).then((result) => {
+                        if (!result.ok) toast.error(result.error);
+                        else toast.success("Pro granted.");
+                        return reload();
+                      })
+                    }
+                  >
+                    Give Pro
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      void revokePro({ data: { userId: student.id } }).then((result) => {
+                        if (!result.ok) toast.error(result.error);
+                        else toast.success("Back on Free.");
+                        return reload();
+                      })
+                    }
+                  >
+                    Make free
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    if (!window.confirm(`Clear classes and lectures for ${student.email}? Their account stays.`)) return;
+                    void clearStudentDesk({ data: { userId: student.id } }).then((result) => {
+                      if (!result.ok) toast.error(result.error);
+                      else toast.success("Desk cleared.");
+                      return reload();
+                    });
+                  }}
+                >
+                  Clear desk
+                </Button>
+              </div>
             ) : null}
           </li>
         ))}
       </ul>
+      {shown.length === 0 ? <p className="py-6 text-sm text-muted-foreground">No students match that.</p> : null}
     </section>
   );
 }

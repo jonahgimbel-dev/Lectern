@@ -35,6 +35,18 @@ export type UsageStats = {
   stripeWebhookHint: string | null;
   ownerEmail: string | null;
   ownerHow: "email" | "claimed";
+  emptyDesks: number;
+  neverRecorded: number;
+  daily: { day: string; lectures: number }[];
+  recent: {
+    id: string;
+    title: string;
+    student: string;
+    email: string;
+    className: string;
+    startedAt: string;
+    durationSec: number;
+  }[];
   mine: { classes: number; lectures: number; school: string; grade: string };
 };
 
@@ -321,6 +333,69 @@ export const getUsage = createServerFn({ method: "GET" })
     } catch {
       /* ignore */
     }
+    let emptyDesks = 0;
+    let neverRecorded = 0;
+    let daily: UsageStats["daily"] = [];
+    let recent: UsageStats["recent"] = [];
+    try {
+      const [empty] = await sql<{ empty: number | string; silent: number | string }>`
+        select
+          (select count(*) from "user" u
+            where not exists (select 1 from courses c where c.user_id = u.id)) as empty,
+          (select count(*) from "user" u
+            where not exists (select 1 from lectures l where l.user_id = u.id)) as silent
+      `;
+      emptyDesks = num(empty?.empty);
+      neverRecorded = num(empty?.silent);
+    } catch {
+      emptyDesks = 0;
+      neverRecorded = 0;
+    }
+    try {
+      daily = (
+        await sql<{ day: string; n: number | string }>`
+          select to_char(date_trunc('day', started_at), 'YYYY-MM-DD') as day, count(*) as n
+          from lectures
+          where started_at >= now() - interval '14 days'
+          group by 1
+          order by 1
+        `
+      ).map((row) => ({ day: row.day, lectures: num(row.n) }));
+    } catch {
+      daily = [];
+    }
+    try {
+      recent = (
+        await sql<{
+          id: string;
+          title: string;
+          student: string | null;
+          email: string | null;
+          class_name: string | null;
+          started_at: string;
+          duration_sec: number | string;
+        }>`
+          select l.id, l.title, u.name as student, u.email,
+            coalesce(c.code || ' · ' || c.name, 'Inbox') as class_name,
+            l.started_at::text as started_at, l.duration_sec
+          from lectures l
+          join "user" u on u.id = l.user_id
+          left join courses c on c.id = l.course_id
+          order by l.started_at desc
+          limit 25
+        `
+      ).map((row) => ({
+        id: row.id,
+        title: row.title,
+        student: row.student || row.email || "Student",
+        email: row.email ?? "",
+        className: row.class_name ?? "Inbox",
+        startedAt: row.started_at,
+        durationSec: num(row.duration_sec),
+      }));
+    } catch {
+      recent = [];
+    }
     return {
       ok: true,
       stats: {
@@ -338,6 +413,10 @@ export const getUsage = createServerFn({ method: "GET" })
         newThisWeek: site.newThisWeek,
         proStudents,
         freeStudents: Math.max(0, site.students - proStudents),
+        emptyDesks,
+        neverRecorded,
+        daily,
+        recent,
         schools: schoolRows.map((row) => ({ school: row.school, students: num(row.n) })),
         stripeReady: stripeReady(),
         stripeSecretHint: maskSecret(stripeSecret()),

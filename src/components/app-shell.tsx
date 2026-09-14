@@ -60,14 +60,14 @@ export function AppShell({ children }: { children: ReactNode }) {
             ))}
             {isOwner ? (
               <Link to="/usage" className="font-medium text-primary">
-                Usage
+                Owner
               </Link>
             ) : null}
           </nav>
           <div className="flex items-center gap-3">
             {isOwner ? (
               <Link to="/usage" className="text-sm font-medium text-primary md:hidden">
-                Usage
+                Owner
               </Link>
             ) : null}
             {isPending ? (

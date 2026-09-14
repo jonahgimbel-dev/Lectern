@@ -199,6 +199,39 @@ export const grantPro = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
+export const revokePro = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: unknown) => z.object({ userId: z.string() }).parse(data))
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    await assertOwner(sql, context.userId);
+    if (data.userId === context.userId) return { ok: false as const, error: "Don’t remove Pro from the owner account." };
+    await applyPlan(sql, data.userId, { plan: "free", status: "none" });
+    return { ok: true as const };
+  });
+
+export const clearStudentDesk = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: unknown) => z.object({ userId: z.string() }).parse(data))
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    await assertOwner(sql, context.userId);
+    if (data.userId === context.userId) return { ok: false as const, error: "Don’t clear the owner desk from here." };
+    const [target] = await sql<{ email: string | null; name: string | null }>`
+      select email, name from "user" where id = ${data.userId}
+    `;
+    if (!target) return { ok: false as const, error: "Student not found." };
+    if (identityIsOwner({ email: target.email, name: target.name })) {
+      return { ok: false as const, error: "Don’t clear the owner desk from here." };
+    }
+    await sql`delete from cards where user_id = ${data.userId}`;
+    await sql`delete from exams where user_id = ${data.userId}`;
+    await sql`delete from lectures where user_id = ${data.userId}`;
+    await sql`delete from courses where user_id = ${data.userId}`;
+    await sql`delete from lms_connections where user_id = ${data.userId}`;
+    return { ok: true as const };
+  });
+
 export const redeemInvite = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((data: unknown) => z.object({ code: z.string().min(4).max(24) }).parse(data))
