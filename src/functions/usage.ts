@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { applyPlan } from "@/functions/billing";
-import { restoreForUser } from "@/functions/recover";
+import { repairEmptyDesksForOwner } from "@/functions/recover";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
 import { identityIsOwner } from "@/lib/owner";
@@ -108,11 +108,6 @@ async function resolveOwner(sql: Awaited<ReturnType<typeof getSql>>, userId: str
     } catch {
       /* unique owner race */
     }
-    try {
-      await restoreForUser(sql, userId);
-    } catch {
-      /* census may be empty */
-    }
     return { isOwner: true, canClaim: false };
   }
   const [me] = await sql<{ is_owner: boolean }>`select is_owner from profiles where user_id = ${userId}`;
@@ -193,6 +188,11 @@ export const getUsage = createServerFn({ method: "GET" })
     const sql = await getSql();
     const owner = await resolveOwner(sql, context.userId);
     if (!owner.isOwner) return { ok: false, error: "Usage is only for the Lectern owner." };
+    try {
+      await repairEmptyDesksForOwner(sql, context.userId);
+    } catch {
+      /* still show stats */
+    }
     const email = await userEmail(sql, context.userId);
     await hydrateStripe().catch(() => undefined);
     let site: {

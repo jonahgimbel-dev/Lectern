@@ -114,7 +114,7 @@ export function RestoreDesk({
             disabled={busy === "all"}
             onClick={() => {
               setBusy("all");
-              void restoreEveryDeskToMe()
+              void restoreEveryDeskToMe({ data: { confirm: "MOVE ALL DESKS" } })
                 .then((result) => {
                   if (!result.ok) toast.error(result.error);
                   else {
@@ -126,7 +126,7 @@ export function RestoreDesk({
                 .finally(() => setBusy(""));
             }}
           >
-            Attach every desk to me
+            Attach unsigned leftover desks
           </Button>
         ) : null}
       </div>

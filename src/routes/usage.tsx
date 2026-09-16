@@ -19,6 +19,7 @@ import {
   type InviteRow,
   type StudentRow,
 } from "@/functions/invites";
+import { reclaimThisDesk, repairEmptyDesks } from "@/functions/recover";
 import { formatAgo, formatDuration, formatLectureDate } from "@/lib/format";
 import { joinInviteText } from "@/lib/join-text";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
@@ -391,9 +392,27 @@ function StudentDesk({ onChanged }: { onChanged: () => void }) {
     <section className="rounded-xl border border-border bg-surface p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="font-display text-xl">Students</h2>
-        <Button size="sm" variant="outline" onClick={exportCsv}>
-          Export CSV
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              void repairEmptyDesks().then((result) => {
+                if (!result.ok) toast.error(result.error);
+                else {
+                  const n = result.restored.length;
+                  toast.success(n ? `Returned classes to ${n} student${n === 1 ? "" : "s"}.` : "No empty desks needed repair.");
+                  return reload();
+                }
+              })
+            }
+          >
+            Return missing classes
+          </Button>
+          <Button size="sm" variant="outline" onClick={exportCsv}>
+            Export CSV
+          </Button>
+        </div>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name or email" className="max-w-xs" />
@@ -428,6 +447,21 @@ function StudentDesk({ onChanged }: { onChanged: () => void }) {
             </div>
             {!student.isOwner ? (
               <div className="flex flex-wrap gap-2">
+                {student.classes === 0 ? (
+                  <Button
+                    size="sm"
+                    variant="accent"
+                    onClick={() =>
+                      void reclaimThisDesk({ data: { userId: student.id } }).then((result) => {
+                        if (!result.ok) toast.error(result.error);
+                        else toast.success(result.moved ? `Returned ${result.moved} classes.` : "Nothing to return.");
+                        return reload();
+                      })
+                    }
+                  >
+                    Return classes
+                  </Button>
+                ) : null}
                 {student.plan !== "pro" ? (
                   <Button
                     size="sm"

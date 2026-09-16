@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { authMiddleware } from "@/lib/auth/middleware";
+import { reclaimMyDesk } from "@/functions/recover";
 import { duesFromLectureMaterial } from "@/lib/due-from-notes";
 import { getSql } from "@/lib/db";
 import { runSummarize } from "@/functions/summarize";
@@ -521,6 +522,11 @@ export const getDesk = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }): Promise<Desk> => {
     const sql = await getSql();
+    try {
+      await reclaimMyDesk(sql, context.userId);
+    } catch {
+      /* keep reading this account’s rows */
+    }
     const courses = await sql<{
       id: string;
       name: string;
