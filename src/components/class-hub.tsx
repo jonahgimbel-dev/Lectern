@@ -20,13 +20,24 @@ export function ClassHub({ desk, onReload }: { desk: Desk; onReload: () => void 
           </p>
         </section>
         {desk.courses.length === 0 ? (
-          <p className="rounded-xl border border-border bg-surface p-5 text-muted-foreground">
-            Your desk is empty. Add a class, or connect Canvas from Connect.
-          </p>
+          <div className="rounded-lg border border-border bg-surface p-6">
+            <h2 className="font-display text-2xl tracking-tight">Your desk is empty</h2>
+            <p className="mt-2 max-w-md text-muted-foreground">
+              Add a class below, or bring them in from Canvas. Nothing from other students shows up here.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button asChild>
+                <Link to="/connect">Connect Canvas</Link>
+              </Button>
+              <Button asChild variant="outline">
+                <Link to="/record">Record a lecture</Link>
+              </Button>
+            </div>
+          </div>
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2">
             {desk.courses.map((course) => (
-              <li key={course.id} className="rounded-xl border border-border bg-surface p-4">
+              <li key={course.id} className="rounded-lg border border-border bg-surface p-5 lift transition-opacity duration-150 hover:opacity-95">
                 <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">{course.code}</p>
                 <h2 className="mt-1 font-display text-2xl tracking-tight">{course.name}</h2>
                 <p className="mt-1 text-sm text-muted-foreground">

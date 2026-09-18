@@ -13,8 +13,11 @@
   --color-good: #2f6b4f;
   --color-muted-foreground: #6b645b;
   --radius: 0.75rem;
+  --radius-sm: 0.5rem;
+  --radius-lg: 1.25rem;
   --font-sans: "Figtree", "Segoe UI", system-ui, sans-serif;
   --font-display: "Fraunces", "Iowan Old Style", Georgia, serif;
+  --shadow-card: 0 1px 0 rgb(28 25 23 / 0.04), 0 18px 40px -24px rgb(31 77 58 / 0.28);
 }
 
 @layer base {
@@ -40,5 +43,25 @@
   button:not(:disabled),
   [role="button"]:not(:disabled) {
     cursor: pointer;
+  }
+  ::selection {
+    background: var(--color-primary);
+    color: var(--color-primary-fg);
+  }
+}
+
+@layer utilities {
+  .lift {
+    box-shadow: var(--shadow-card);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

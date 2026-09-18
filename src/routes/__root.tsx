@@ -15,7 +15,7 @@ export const Route = createRootRoute({
       { name: "theme-color", content: "#1f4d3a" },
       {
         name: "description",
-        content: "Record lectures, recap them in one minute, and study from a class hub.",
+        content: "Walk out of class with something you can study. Recap, cards, and due dates on one desk.",
       },
     ],
     links: [

@@ -26,8 +26,12 @@ function Login() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-sm space-y-5 rounded-xl border border-border bg-surface p-6">
-        <h1 className="font-display text-3xl tracking-tight">{mode === "in" ? "Sign in" : "Create an account"}</h1>
+      <div className="mx-auto max-w-sm space-y-5 rounded-lg border border-border bg-surface p-6 lift">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Account</p>
+          <h1 className="mt-2 font-display text-3xl tracking-tight">{mode === "in" ? "Sign in" : "Create an account"}</h1>
+          <p className="mt-2 text-sm text-muted-foreground">Your desk is private. Classes you add stay on this account.</p>
+        </div>
         {authEnabled ? (
           <>
             <div className="space-y-2">
