@@ -209,83 +209,68 @@ async function pinRowsToCourseOwner(sql: Sql, userId: string) {
 
 function looksLikeJack(name: string | null | undefined, email: string | null | undefined) {
   const blob = `${name ?? ""} ${email ?? ""}`.toLowerCase();
-  return blob.includes("elardo") || blob.includes("jack elardo");
+  return blob.includes("elardo");
+}
+
+/** Classes that sat on a student but were recorded or created before that student existed. */
+export async function returnOwnerCourses(sql: Sql, ownerId: string): Promise<number> {
+  const orphans = await sql<{ id: string }>`
+    select id from courses
+    where user_id <> ${ownerId}
+      and not exists (select 1 from "user" u where u.id = courses.user_id)
+  `;
+  const predating = await sql<{ id: string }>`
+    select c.id
+    from courses c
+    join "user" u on u.id = c.user_id
+    where c.user_id <> ${ownerId}
+      and (
+        c.created_at < u."createdAt" - interval '1 hour'
+        or exists (
+          select 1 from lectures l
+          where l.course_id = c.id and l.started_at < u."createdAt"
+        )
+      )
+  `;
+  const ids = [...new Set([...orphans, ...predating].map((row) => row.id))];
+  if (!ids.length) return 0;
+  return moveCourseIds(sql, ids, ownerId);
+}
+
+async function mergeAliasAccounts(sql: Sql, userId: string): Promise<number> {
+  const [me] = await sql<{ email: string | null; name: string | null }>`
+    select email, name from "user" where id = ${userId} limit 1
+  `;
+  if (!me) return 0;
+  let moved = await claimMatchingDesks(sql, userId);
+  if (!looksLikeJack(me.name, me.email)) return moved;
+  const others = await sql<{ id: string }>`
+    select id from "user"
+    where id <> ${userId}
+      and (
+        lower(coalesce(name, '')) like ${"%elardo%"}
+        or lower(coalesce(email, '')) like ${"%elardo%"}
+      )
+  `;
+  for (const row of others) moved += await reassign(sql, row.id, userId);
+  return moved;
 }
 
 /**
- * If this student has an empty desk, take back classes that were moved onto the
- * owner (or an unknown id) right after they signed up — e.g. a Canvas import.
- * Always merges duplicate logins and pulls recordings that belong on their classes.
+ * Merge duplicate logins for this student. Never take classes off the owner.
  */
 export async function reclaimMyDesk(sql: Sql, userId: string): Promise<number> {
-  let moved = await claimMatchingDesks(sql, userId);
-  const [me] = await sql<{
-    created_at: string;
-    is_owner: boolean | null;
-    name: string | null;
-    email: string | null;
-  }>`
-    select u."createdAt"::text as created_at, p.is_owner, u.name, u.email
+  const [me] = await sql<{ is_owner: boolean | null }>`
+    select p.is_owner
     from "user" u
     left join profiles p on p.user_id = u.id
     where u.id = ${userId}
   `;
-  if (!me || me.is_owner) {
+  if (me?.is_owner) {
     await pinRowsToCourseOwner(sql, userId);
-    return moved;
+    return 0;
   }
-  const owners = await sql<{ user_id: string }>`select user_id from profiles where is_owner = true`;
-  const ownerId = owners[0]?.user_id ?? "";
-  const windowDays = looksLikeJack(me.name, me.email) ? 120 : 14;
-
-  const lectured = await sql<{ id: string }>`
-    select distinct c.id
-    from courses c
-    join lectures l on l.course_id = c.id
-    where l.user_id = ${userId}
-      and c.user_id <> ${userId}
-      and c.created_at >= ${me.created_at}::timestamptz - interval '30 minutes'
-      and (
-        c.user_id not in (select id from "user")
-        or (${ownerId} <> '' and c.user_id = ${ownerId}
-          and not exists (
-            select 1 from lectures x
-            where x.course_id = c.id and x.user_id <> ${userId} and x.user_id <> ${ownerId}
-          )
-        )
-      )
-  `;
-  if (lectured.length) {
-    moved += await moveCourseIds(
-      sql,
-      lectured.map((row) => row.id),
-      userId,
-    );
-  }
-
-  const batch = await sql<{ id: string }>`
-    select c.id
-    from courses c
-    where c.user_id <> ${userId}
-      and c.created_at >= ${me.created_at}::timestamptz - interval '30 minutes'
-      and c.created_at <= ${me.created_at}::timestamptz + make_interval(days => ${windowDays})
-      and (
-        (${ownerId} <> '' and c.user_id = ${ownerId})
-        or not exists (select 1 from "user" u where u.id = c.user_id)
-      )
-      and not exists (
-        select 1 from lectures l
-        where l.course_id = c.id and l.started_at < ${me.created_at}::timestamptz
-      )
-  `;
-  if (batch.length) {
-    moved += await moveCourseIds(
-      sql,
-      batch.map((row) => row.id),
-      userId,
-    );
-  }
-
+  const moved = await mergeAliasAccounts(sql, userId);
   await pinRowsToCourseOwner(sql, userId);
   return moved;
 }
@@ -379,24 +364,25 @@ export const giveCoursesToStudent = createServerFn({ method: "POST" })
   });
 
 export async function repairEmptyDesksForOwner(sql: Sql, ownerId: string) {
-  const named = await sql<{ id: string }>`
-    select u.id
+  const takenBack = await returnOwnerCourses(sql, ownerId);
+
+  const named = await sql<{ id: string; n: number | string }>`
+    select u.id, (select count(*) from courses c where c.user_id = u.id) as n
     from "user" u
     where u.id <> ${ownerId}
       and (
         lower(coalesce(u.name, '')) like ${"%elardo%"}
         or lower(coalesce(u.email, '')) like ${"%elardo%"}
       )
-    order by greatest(
-      u."updatedAt",
-      (select max(s."updatedAt") from "session" s where s."userId" = u.id),
-      (select max(l.started_at) from lectures l where l.user_id = u.id)
-    ) desc nulls last
+    order by (select count(*) from courses c where c.user_id = u.id) desc,
+      (select count(*) from lectures l where l.user_id = u.id) desc,
+      u."updatedAt" desc nulls last
   `;
   if (named.length) {
     const canonical = named[0].id;
     for (const row of named.slice(1)) await reassign(sql, row.id, canonical);
     await reclaimMyDesk(sql, canonical);
+    await returnOwnerCourses(sql, ownerId);
   }
 
   const empty = await sql<{ id: string; name: string | null; email: string | null }>`
@@ -423,9 +409,9 @@ export async function repairEmptyDesksForOwner(sql: Sql, ownerId: string) {
     const jack = named[0].id;
     const [row] = await sql<{ n: number | string; name: string | null; email: string | null }>`
       select count(*) as n, u.name, u.email
-      from courses c
-      join "user" u on u.id = ${jack}
-      where c.user_id = ${jack}
+      from "user" u
+      left join courses c on c.user_id = u.id
+      where u.id = ${jack}
       group by u.name, u.email
     `;
     if (row && !restored.some((item) => item.email === (row.email || ""))) {
@@ -435,6 +421,9 @@ export async function repairEmptyDesksForOwner(sql: Sql, ownerId: string) {
         courses: Number(row.n) || 0,
       });
     }
+  }
+  if (takenBack && !restored.length) {
+    restored.push({ name: "Your desk", email: "", courses: takenBack });
   }
   return restored;
 }
@@ -450,6 +439,25 @@ export const repairEmptyDesks = createServerFn({ method: "POST" })
     return { ok: true as const, restored };
   });
 
+export const takeCoursesFromStudent = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: unknown) =>
+    z.object({ fromUserId: z.string().min(1), courseIds: z.array(z.string()).min(1).max(80) }).parse(data),
+  )
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    if (!(await isOwner(sql, context.userId))) {
+      return { ok: false as const, error: "Only the Lectern owner can move classes." };
+    }
+    const held = await sql<{ id: string }>`
+      select id from courses where user_id = ${data.fromUserId} and user_id <> ${context.userId}
+    `;
+    const allow = new Set(held.map((row) => row.id));
+    const ids = data.courseIds.filter((id) => allow.has(id));
+    const moved = await moveCourseIds(sql, ids, context.userId);
+    return { ok: true as const, moved };
+  });
+
 export const reclaimThisDesk = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((data: unknown) => z.object({ userId: z.string().min(1) }).parse(data))
@@ -458,6 +466,10 @@ export const reclaimThisDesk = createServerFn({ method: "POST" })
     if (!(await isOwner(sql, context.userId))) {
       return { ok: false as const, error: "Only the Lectern owner can do this." };
     }
+    const takenBack = await returnOwnerCourses(sql, context.userId);
     const moved = await reclaimMyDesk(sql, data.userId);
-    return { ok: true as const, moved };
+    const [count] = await sql<{ n: number | string }>`
+      select count(*) as n from courses where user_id = ${data.userId}
+    `;
+    return { ok: true as const, moved, classes: Number(count?.n) || 0, takenBack };
   });

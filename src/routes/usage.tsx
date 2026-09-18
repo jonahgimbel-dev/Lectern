@@ -19,7 +19,7 @@ import {
   type InviteRow,
   type StudentRow,
 } from "@/functions/invites";
-import { reclaimThisDesk, repairEmptyDesks } from "@/functions/recover";
+import { reclaimThisDesk, repairEmptyDesks, takeCoursesFromStudent } from "@/functions/recover";
 import { formatAgo, formatDuration, formatLectureDate } from "@/lib/format";
 import { joinInviteText } from "@/lib/join-text";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
@@ -444,24 +444,59 @@ function StudentDesk({ onChanged }: { onChanged: () => void }) {
                 {student.school ? ` · ${student.school}` : ""} · {student.classes} classes · {student.lectures} lectures
                 {student.canvas ? " · Canvas" : ""} · last seen {formatAgo(student.lastSeen)}
               </p>
+              {student.courses.length ? (
+                <ul className="mt-2 flex flex-wrap gap-1">
+                  {student.courses.map((course) => (
+                    <li key={course.id}>
+                      <span className="inline-flex items-center gap-1 rounded-lg bg-secondary px-2 py-1 text-xs">
+                        {course.code || course.name}
+                        {!student.isOwner ? (
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-fg"
+                            onClick={() =>
+                              void takeCoursesFromStudent({
+                                data: { fromUserId: student.id, courseIds: [course.id] },
+                              }).then((result) => {
+                                if (!result.ok) toast.error(result.error);
+                                else toast.success(`Moved ${course.code || course.name} back to your desk.`);
+                                return reload();
+                              })
+                            }
+                          >
+                            Take back
+                          </button>
+                        ) : null}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </div>
             {!student.isOwner ? (
               <div className="flex flex-wrap gap-2">
-                {student.classes === 0 ? (
-                  <Button
-                    size="sm"
-                    variant="accent"
-                    onClick={() =>
-                      void reclaimThisDesk({ data: { userId: student.id } }).then((result) => {
-                        if (!result.ok) toast.error(result.error);
-                        else toast.success(result.moved ? `Returned ${result.moved} classes.` : "Nothing to return.");
-                        return reload();
-                      })
-                    }
-                  >
-                    Return classes
-                  </Button>
-                ) : null}
+                <Button
+                  size="sm"
+                  variant={student.classes === 0 ? "accent" : "outline"}
+                  onClick={() =>
+                    void reclaimThisDesk({ data: { userId: student.id } }).then((result) => {
+                      if (!result.ok) {
+                        toast.error(result.error);
+                        return;
+                      }
+                      if (result.takenBack) toast.success(`Moved ${result.takenBack} of your classes back to your desk.`);
+                      if (result.moved) toast.success(`Merged ${result.moved} classes onto ${student.name || "this student"}.`);
+                      else if (!result.takenBack && result.classes === 0) {
+                        toast.message("No other login had classes for them. If a class of yours is listed here, Take back.");
+                      } else if (!result.takenBack) {
+                        toast.success(`${student.name || "Student"} has ${result.classes} classes.`);
+                      }
+                      return reload();
+                    })
+                  }
+                >
+                  Return classes
+                </Button>
                 {student.plan !== "pro" ? (
                   <Button
                     size="sm"

@@ -16,6 +16,13 @@ export type InviteRow = {
   createdAt: string;
 };
 
+export type StudentCourse = {
+  id: string;
+  name: string;
+  code: string;
+  lectures: number;
+};
+
 export type StudentRow = {
   id: string;
   email: string;
@@ -33,6 +40,7 @@ export type StudentRow = {
   signedIn: boolean;
   canvas: boolean;
   createdAt: string;
+  courses: StudentCourse[];
 };
 
 function num(value: unknown): number {
@@ -167,6 +175,28 @@ export const listStudents = createServerFn({ method: "GET" })
       order by last_seen desc nulls last, u."createdAt" desc
       limit 200
     `;
+    const held = await sql<{
+      id: string;
+      user_id: string;
+      name: string;
+      code: string;
+      lectures: number | string;
+    }>`
+      select id, user_id, name, code,
+        (select count(*) from lectures l where l.course_id = courses.id) as lectures
+      from courses
+    `;
+    const byUser = new Map<string, StudentCourse[]>();
+    for (const row of held) {
+      const list = byUser.get(row.user_id) ?? [];
+      list.push({
+        id: row.id,
+        name: row.name,
+        code: row.code,
+        lectures: num(row.lectures),
+      });
+      byUser.set(row.user_id, list);
+    }
     return rows.map((row) => ({
       id: row.id,
       email: row.email,
@@ -184,6 +214,7 @@ export const listStudents = createServerFn({ method: "GET" })
       signedIn: Boolean(row.signed_in),
       canvas: Boolean(row.canvas),
       createdAt: row.created_at,
+      courses: byUser.get(row.id) ?? [],
     }));
   });
 
