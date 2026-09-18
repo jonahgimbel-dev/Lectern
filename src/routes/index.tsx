@@ -1,9 +1,18 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
+import { useEffect, useRef } from "react";
 import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
 
 export const Route = createFileRoute("/")({ component: Home });
+
+const RECAP = [
+  "Accounts receivable is money customers still owe.",
+  "The allowance estimates what will not be collected.",
+  "Net receivables equal AR minus that allowance.",
+];
+
+const WAVE = [34, 72, 48, 90, 40, 78, 56, 96, 38, 70, 52, 88, 44, 80, 60, 94, 36, 68, 50, 84, 42, 76, 58, 92];
 
 function Home() {
   const user = useCurrentUser();
@@ -13,7 +22,7 @@ function Home() {
   return (
     <AppShell home>
       <div className="space-y-20">
-        <section className="grid items-center gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+        <section className="grid items-center gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)] lg:pb-12">
           <div className="space-y-6">
             <p className="text-xs font-medium uppercase tracking-[0.18em] text-accent">Study desk</p>
             <h1 className="font-display text-5xl tracking-tight md:text-6xl">
@@ -32,7 +41,7 @@ function Home() {
             </div>
             <p className="text-sm text-muted-foreground">Free to try · two lectures · your desk stays yours</p>
           </div>
-          <RecapCard />
+          <DeskScene />
         </section>
 
         <section className="grid gap-3 sm:grid-cols-3">
@@ -99,19 +108,63 @@ function Home() {
   );
 }
 
-function RecapCard() {
+function DeskScene() {
+  const video = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    const node = video.current;
+    if (!node) return;
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const apply = () => {
+      if (motion.matches) node.pause();
+      else void node.play().catch(() => undefined);
+    };
+    apply();
+    motion.addEventListener("change", apply);
+    return () => motion.removeEventListener("change", apply);
+  }, []);
+
   return (
-    <aside className="rounded-lg border border-border bg-surface p-6 lift">
-      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">ACCT 2302 · today</p>
-      <h2 className="mt-3 font-display text-3xl tracking-tight">Receivables & aging</h2>
-      <p className="mt-6 text-xs font-medium uppercase tracking-[0.18em] text-accent">In one minute</p>
-      <ul className="mt-3 space-y-2 text-sm">
-        <li>Accounts receivable is money customers still owe.</li>
-        <li>The allowance estimates what will not be collected.</li>
-        <li>Net receivables equal AR minus that allowance.</li>
-      </ul>
-      <p className="mt-6 text-xs font-medium uppercase tracking-[0.18em] text-accent">They’ll ask</p>
-      <p className="mt-2 text-sm text-muted-foreground">Compute net receivables from the aging schedule.</p>
-    </aside>
+    <div className="relative">
+      <div className="overflow-hidden rounded-lg border border-border lift">
+        <video
+          ref={video}
+          className="aspect-[3/2] w-full object-cover"
+          autoPlay
+          muted
+          loop
+          playsInline
+          poster="/home-desk.jpg"
+          aria-label="A lecture desk with notebook, coffee, and a recorder"
+        >
+          <source src="/home-desk.mp4" type="video/mp4" />
+        </video>
+        <div className="pointer-events-none absolute left-4 top-4 inline-flex items-center gap-2 rounded-full bg-surface/90 px-3 py-1 text-xs font-medium text-fg">
+          <span className="size-2 animate-pulse rounded-full bg-accent" />
+          REC · 12:41
+        </div>
+      </div>
+      <aside className="mt-4 rounded-lg border border-border bg-surface p-5 lift lg:absolute lg:-bottom-10 lg:-left-6 lg:mt-0 lg:w-80">
+        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">ACCT 2302 · live recap</p>
+        <h2 className="mt-2 font-display text-2xl tracking-tight">Receivables & aging</h2>
+        <p className="mt-4 text-xs font-medium uppercase tracking-[0.18em] text-accent">In one minute</p>
+        <ul className="mt-2 space-y-2 text-sm">
+          {RECAP.map((line, i) => (
+            <li key={line} className="recap-line" style={{ animationDelay: `${280 + i * 220}ms` }}>
+              {line}
+            </li>
+          ))}
+        </ul>
+        <div className="mt-5 flex h-8 items-end gap-px" aria-hidden>
+          {WAVE.map((n, i) => (
+            <span
+              key={i}
+              className="wave-bar w-1 rounded-full bg-accent"
+              style={{ height: `${n}%`, animationDelay: `${i * 70}ms` }}
+            />
+          ))}
+        </div>
+      </aside>
+    </div>
   );
 }
