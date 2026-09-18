@@ -21,29 +21,34 @@ function Home() {
 
   return (
     <AppShell home>
-      <div className="space-y-20">
-        <section className="grid items-center gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)] lg:pb-12">
-          <div className="space-y-6">
+      <section className="relative min-h-screen overflow-hidden text-primary-fg">
+        <DeskFilm />
+        <div className="absolute inset-0 bg-primary/45" />
+        <div className="absolute inset-x-0 bottom-0 h-2/3 bg-primary/40" />
+        <div className="relative z-10 mx-auto flex min-h-screen max-w-6xl flex-col justify-end gap-8 px-4 pb-12 pt-24 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-xl space-y-5">
             <p className="text-xs font-medium uppercase tracking-[0.18em] text-accent">Study desk</p>
             <h1 className="font-display text-5xl tracking-tight md:text-6xl">
               Walk out of class with something you can study.
             </h1>
-            <p className="max-w-xl text-lg text-muted-foreground">
+            <p className="text-lg text-primary-fg/85">
               Record the lecture. Lectern files a one-minute recap, cards, and due dates onto that class — from Canvas or from what was said out loud.
             </p>
             <div className="flex flex-wrap gap-2">
-              <Button asChild size="lg">
+              <Button asChild size="lg" className="bg-surface text-fg hover:bg-secondary">
                 <Link to={primary}>{primaryLabel}</Link>
               </Button>
-              <Button asChild variant="outline" size="lg">
+              <Button asChild variant="outline" size="lg" className="border-primary-fg/40 bg-transparent text-primary-fg hover:bg-primary/40">
                 <Link to="/connect">Connect Canvas</Link>
               </Button>
             </div>
-            <p className="text-sm text-muted-foreground">Free to try · two lectures · your desk stays yours</p>
+            <p className="text-sm text-primary-fg/70">Free to try · two lectures · your desk stays yours</p>
           </div>
-          <DeskScene />
-        </section>
+          <RecapCard />
+        </div>
+      </section>
 
+      <div className="mx-auto max-w-6xl space-y-20 px-4 py-16">
         <section className="grid gap-3 sm:grid-cols-3">
           {[
             ["01", "Record", "Hit record in class, or share the tab if the lecture is on a screen. Captions run while you listen."],
@@ -108,7 +113,7 @@ function Home() {
   );
 }
 
-function DeskScene() {
+function DeskFilm() {
   const video = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -125,46 +130,46 @@ function DeskScene() {
   }, []);
 
   return (
-    <div className="relative">
-      <div className="overflow-hidden rounded-lg border border-border lift">
-        <video
-          ref={video}
-          className="aspect-[3/2] w-full object-cover"
-          autoPlay
-          muted
-          loop
-          playsInline
-          poster="/home-desk.jpg"
-          aria-label="A lecture desk with notebook, coffee, and a recorder"
-        >
-          <source src="/home-desk.mp4" type="video/mp4" />
-        </video>
-        <div className="pointer-events-none absolute left-4 top-4 inline-flex items-center gap-2 rounded-full bg-surface/90 px-3 py-1 text-xs font-medium text-fg">
-          <span className="size-2 animate-pulse rounded-full bg-accent" />
-          REC · 12:41
-        </div>
+    <video
+      ref={video}
+      className="absolute inset-0 size-full object-cover"
+      autoPlay
+      muted
+      loop
+      playsInline
+      poster="/home-desk.jpg"
+      aria-hidden
+    >
+      <source src="/home-desk.mp4" type="video/mp4" />
+    </video>
+  );
+}
+
+function RecapCard() {
+  return (
+    <aside className="w-full max-w-sm rounded-lg border border-border bg-surface p-5 text-fg lift">
+      <p className="inline-flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <span className="size-2 animate-pulse rounded-full bg-accent" />
+        ACCT 2302 · live recap
+      </p>
+      <h2 className="mt-2 font-display text-2xl tracking-tight">Receivables & aging</h2>
+      <p className="mt-4 text-xs font-medium uppercase tracking-[0.18em] text-accent">In one minute</p>
+      <ul className="mt-2 space-y-2 text-sm">
+        {RECAP.map((line, i) => (
+          <li key={line} className="recap-line" style={{ animationDelay: `${280 + i * 220}ms` }}>
+            {line}
+          </li>
+        ))}
+      </ul>
+      <div className="mt-5 flex h-8 items-end gap-px" aria-hidden>
+        {WAVE.map((n, i) => (
+          <span
+            key={i}
+            className="wave-bar w-1 rounded-full bg-accent"
+            style={{ height: `${n}%`, animationDelay: `${i * 70}ms` }}
+          />
+        ))}
       </div>
-      <aside className="mt-4 rounded-lg border border-border bg-surface p-5 lift lg:absolute lg:-bottom-10 lg:-left-6 lg:mt-0 lg:w-80">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">ACCT 2302 · live recap</p>
-        <h2 className="mt-2 font-display text-2xl tracking-tight">Receivables & aging</h2>
-        <p className="mt-4 text-xs font-medium uppercase tracking-[0.18em] text-accent">In one minute</p>
-        <ul className="mt-2 space-y-2 text-sm">
-          {RECAP.map((line, i) => (
-            <li key={line} className="recap-line" style={{ animationDelay: `${280 + i * 220}ms` }}>
-              {line}
-            </li>
-          ))}
-        </ul>
-        <div className="mt-5 flex h-8 items-end gap-px" aria-hidden>
-          {WAVE.map((n, i) => (
-            <span
-              key={i}
-              className="wave-bar w-1 rounded-full bg-accent"
-              style={{ height: `${n}%`, animationDelay: `${i * 70}ms` }}
-            />
-          ))}
-        </div>
-      </aside>
-    </div>
+    </aside>
   );
 }

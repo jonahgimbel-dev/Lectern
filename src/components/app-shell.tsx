@@ -133,8 +133,8 @@ export function AppShell({ children, home = false }: { children: ReactNode; home
           </nav>
         ) : null}
       </header>
-      <main className={cn("mx-auto max-w-6xl px-4", home ? "py-10 md:py-16" : "py-8")}>{children}</main>
-      <footer className="mt-8 border-t border-border">
+      <main className={cn(home ? "" : "mx-auto max-w-6xl px-4 py-8")}>{children}</main>
+      <footer className={cn("border-t border-border", home ? "" : "mt-8")}>
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-6 text-sm text-muted-foreground">
           <p>Lectern · study from the lecture, not a wall of notes.</p>
           <div className="flex flex-wrap gap-4">
