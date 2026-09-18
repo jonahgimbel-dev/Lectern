@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { applyPlan } from "@/functions/billing";
 import { repairEmptyDesksForOwner } from "@/functions/recover";
+import { snapshotKnowledge } from "@/functions/archive";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
 import { identityIsOwner } from "@/lib/owner";
@@ -190,6 +191,7 @@ export const getUsage = createServerFn({ method: "GET" })
     if (!owner.isOwner) return { ok: false, error: "Usage is only for the Lectern owner." };
     try {
       await repairEmptyDesksForOwner(sql, context.userId);
+      await snapshotKnowledge(sql);
     } catch {
       /* still show stats */
     }

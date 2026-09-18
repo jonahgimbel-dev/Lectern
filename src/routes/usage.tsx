@@ -20,6 +20,7 @@ import {
   type StudentRow,
 } from "@/functions/invites";
 import { reclaimThisDesk, repairEmptyDesks, takeCoursesFromStudent } from "@/functions/recover";
+import { exportKnowledge, listKnowledge, restoreKnowledge, snapshotNow, type ArchiveHit } from "@/functions/archive";
 import { formatAgo, formatDuration, formatLectureDate } from "@/lib/format";
 import { joinInviteText } from "@/lib/join-text";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
@@ -27,7 +28,7 @@ import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/usage")({ component: UsagePage });
 
-const TABS = ["Overview", "Students", "Activity", "Codes", "Billing"] as const;
+const TABS = ["Overview", "Students", "Activity", "Knowledge", "Codes", "Billing"] as const;
 type Tab = (typeof TABS)[number];
 
 function UsagePage() {
@@ -143,6 +144,7 @@ function OwnerDesk() {
       {tab === "Overview" ? <Overview stats={stats} /> : null}
       {tab === "Students" ? <StudentDesk onChanged={() => void load()} /> : null}
       {tab === "Activity" ? <ActivityFeed stats={stats} /> : null}
+      {tab === "Knowledge" ? <KnowledgeDesk /> : null}
       {tab === "Codes" ? <InviteDesk /> : null}
       {tab === "Billing" ? (
         <div className="space-y-6">
@@ -546,6 +548,123 @@ function StudentDesk({ onChanged }: { onChanged: () => void }) {
         ))}
       </ul>
       {shown.length === 0 ? <p className="py-6 text-sm text-muted-foreground">No students match that.</p> : null}
+    </section>
+  );
+}
+
+function KnowledgeDesk() {
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<ArchiveHit[]>([]);
+  const [total, setTotal] = useState(0);
+  const [busy, setBusy] = useState(false);
+
+  async function load(query = q) {
+    const result = await listKnowledge({ data: { q: query } });
+    setHits(result.hits);
+    setTotal(result.total);
+  }
+
+  useEffect(() => {
+    void load("").catch(() => toast.error("Could not open the knowledge base."));
+  }, []);
+
+  return (
+    <section className="rounded-xl border border-border bg-surface p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="font-display text-xl">Knowledge base</h2>
+          <p className="mt-1 max-w-xl text-sm text-muted-foreground">
+            Every student lecture is copied here when it is saved. If a desk is wiped, restore from this list. It is owner-only.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              void snapshotNow()
+                .then((result) => {
+                  toast.success(result.archived ? `Copied ${result.archived} new lectures.` : `Knowledge base is current · ${result.total} lectures.`);
+                  return load();
+                })
+                .catch(() => toast.error("Could not snapshot."))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Snapshot now
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setBusy(true);
+              void exportKnowledge()
+                .then((result) => {
+                  const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+                  const url = URL.createObjectURL(blob);
+                  const link = document.createElement("a");
+                  link.href = url;
+                  link.download = `lectern-knowledge-${new Date().toISOString().slice(0, 10)}.json`;
+                  link.click();
+                  URL.revokeObjectURL(url);
+                  toast.success(`Downloaded ${result.lectures.length} lectures.`);
+                })
+                .catch(() => toast.error("Could not export."))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Download JSON
+          </Button>
+        </div>
+      </div>
+      <p className="mt-4 text-sm text-muted-foreground">{total} lectures stored</p>
+      <form
+        className="mt-3 flex flex-wrap gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void load(q);
+        }}
+      >
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Student, class, or title" className="max-w-xs" />
+        <Button type="submit" size="sm">
+          Search
+        </Button>
+      </form>
+      <ul className="mt-4 divide-y divide-border">
+        {hits.map((hit) => (
+          <li key={hit.id} className="flex flex-wrap items-start justify-between gap-3 py-3">
+            <div>
+              <p className="font-medium">{hit.title}</p>
+              <p className="text-xs text-muted-foreground">
+                {hit.courseCode ? `${hit.courseCode} · ` : ""}
+                {hit.courseName} · {hit.userName || hit.userEmail || "Unknown student"}
+                {hit.startedAt ? ` · ${formatLectureDate(Date.parse(hit.startedAt))}` : ""} · {hit.words} words
+                {hit.live ? " · on a desk" : " · missing from desks"}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant={hit.live ? "outline" : "accent"}
+              onClick={() =>
+                void restoreKnowledge({ data: { id: hit.id } }).then((result) => {
+                  if (!result.ok) toast.error(result.error);
+                  else toast.success(`Restored “${hit.title}” to ${result.onto}.`);
+                  return load();
+                })
+              }
+            >
+              Restore
+            </Button>
+          </li>
+        ))}
+      </ul>
+      {hits.length === 0 ? (
+        <p className="py-6 text-sm text-muted-foreground">
+          No copies yet. Record a lecture or click Snapshot now to copy what’s already on desks.
+        </p>
+      ) : null}
     </section>
   );
 }

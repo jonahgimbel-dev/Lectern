@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { reclaimMyDesk } from "@/functions/recover";
+import { archiveLectureById } from "@/functions/archive";
 import { duesFromLectureMaterial } from "@/lib/due-from-notes";
 import { getSql } from "@/lib/db";
 import { runSummarize } from "@/functions/summarize";
@@ -311,6 +312,7 @@ export const saveLecture = createServerFn({ method: "POST" })
       `;
     }
     await fileDuesFromLecture(sql, context.userId, course.id, id, notes.actionItems, data.transcript);
+    await archiveLectureById(sql, id, "save").catch(() => false);
     return { ok: true as const, id };
   });
 
@@ -356,6 +358,7 @@ export const rebuildLecture = createServerFn({ method: "POST" })
       `;
     }
     await fileDuesFromLecture(sql, context.userId, row.course_id, row.id, notes.actionItems, row.transcript);
+    await archiveLectureById(sql, row.id, "rebuild").catch(() => false);
     return { ok: true as const };
   });
 
@@ -380,6 +383,7 @@ export const patchLecture = createServerFn({ method: "POST" })
         traps_json = coalesce(${data.traps ? JSON.stringify(data.traps) : null}, traps_json)
       where id = ${data.id} and user_id = ${context.userId}
     `;
+    await archiveLectureById(sql, data.id, "edit").catch(() => false);
     return { ok: true as const };
   });
 
@@ -388,6 +392,7 @@ export const deleteLecture = createServerFn({ method: "POST" })
   .validator((data: unknown) => z.object({ id: z.string() }).parse(data))
   .handler(async ({ context, data }) => {
     const sql = await getSql();
+    await archiveLectureById(sql, data.id, "delete").catch(() => false);
     await sql`delete from cards where lecture_id = ${data.id} and user_id = ${context.userId}`;
     await sql`delete from lectures where id = ${data.id} and user_id = ${context.userId}`;
     return { ok: true as const };
