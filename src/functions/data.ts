@@ -468,56 +468,6 @@ export const deleteExam = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
-export const searchDesk = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
-  .validator((data: unknown) => z.object({ q: z.string().max(80) }).parse(data))
-  .handler(async ({ context, data }) => {
-    const q = `%${data.q.trim()}%`;
-    if (data.q.trim().length < 2) return { courses: [] as Course[], lectures: [] as Lecture[] };
-    const sql = await getSql();
-    const courses = await sql<{
-      id: string;
-      name: string;
-      code: string;
-      term: string;
-      instructor: string;
-      accent: string;
-      syllabus: string;
-      master_summary: string;
-      lms_provider: string | null;
-      created_at: string;
-    }>`
-      select id, name, code, term, instructor, accent, syllabus, master_summary, lms_provider, created_at::text as created_at
-      from courses
-      where user_id = ${context.userId} and (name ilike ${q} or code ilike ${q} or instructor ilike ${q})
-      limit 12
-    `;
-    const lectures = await sql<{
-      id: string;
-      course_id: string;
-      title: string;
-      started_at: string;
-      duration_sec: number;
-      transcript: string;
-      summary: string;
-      outline_json: string;
-      terms_json: string;
-      actions_json: string;
-      asks_json: string;
-      traps_json: string;
-      source: string;
-    }>`
-      select id, course_id, title, started_at::text as started_at, duration_sec, transcript, summary,
-        outline_json, terms_json, actions_json, asks_json, traps_json, source
-      from lectures
-      where user_id = ${context.userId}
-        and (title ilike ${q} or summary ilike ${q} or transcript ilike ${q})
-      order by started_at desc
-      limit 20
-    `;
-    return { courses: courses.map(asCourse), lectures: lectures.map(asLecture) };
-  });
-
 export const getDesk = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }): Promise<Desk> => {
