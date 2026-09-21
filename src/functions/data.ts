@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { reclaimMyDesk } from "@/functions/recover";
-import { archiveLectureById } from "@/functions/archive";
+import { archiveCourseById, archiveLectureById } from "@/functions/archive";
 import { duesFromLectureMaterial } from "@/lib/due-from-notes";
 import { getSql } from "@/lib/db";
 import { runSummarize } from "@/functions/summarize";
@@ -144,6 +144,7 @@ export const createCourse = createServerFn({ method: "POST" })
       insert into courses (id, user_id, name, code, term, instructor)
       values (${id}, ${context.userId}, ${data.name.trim()}, ${code}, ${data.term.trim()}, ${data.instructor.trim()})
     `;
+    await archiveCourseById(sql, id).catch(() => false);
     return { ok: true as const, id };
   });
 

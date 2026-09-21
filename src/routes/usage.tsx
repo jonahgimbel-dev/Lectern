@@ -20,7 +20,7 @@ import {
   type StudentRow,
 } from "@/functions/invites";
 import { reclaimThisDesk, repairEmptyDesks, takeCoursesFromStudent } from "@/functions/recover";
-import { exportKnowledge, listKnowledge, restoreKnowledge, snapshotNow, type ArchiveHit } from "@/functions/archive";
+import { exportKnowledge, importKnowledge, listKnowledge, restoreKnowledge, snapshotNow, type ArchiveHit } from "@/functions/archive";
 import { formatAgo, formatDuration, formatLectureDate } from "@/lib/format";
 import { joinInviteText } from "@/lib/join-text";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
@@ -574,7 +574,7 @@ function KnowledgeDesk() {
         <div>
           <h2 className="font-display text-xl">Knowledge base</h2>
           <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-            Every student lecture is copied here when it is saved. If a desk is wiped, restore from this list. It is owner-only.
+            Two copies. The list below lives with Lectern for a fast restore. The JSON file is the off-site copy — keep it in Google Drive or a folder you control. Do not put student transcripts on GitHub.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -615,8 +615,32 @@ function KnowledgeDesk() {
                 .finally(() => setBusy(false));
             }}
           >
-            Download JSON
+            Download vault
           </Button>
+          <label className="inline-flex min-h-9 cursor-pointer items-center rounded-lg border border-border bg-surface px-3 text-sm font-medium">
+            Restore from file
+            <input
+              type="file"
+              accept="application/json,.json"
+              className="sr-only"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (!file) return;
+                setBusy(true);
+                void file
+                  .text()
+                  .then((text) => JSON.parse(text) as unknown)
+                  .then((payload) => importKnowledge({ data: payload }))
+                  .then((result) => {
+                    toast.success(`Restored ${result.lectures} lectures across ${result.desks} desks.`);
+                    return load();
+                  })
+                  .catch(() => toast.error("That file could not be restored."))
+                  .finally(() => setBusy(false));
+              }}
+            />
+          </label>
         </div>
       </div>
       <p className="mt-4 text-sm text-muted-foreground">{total} lectures stored</p>
